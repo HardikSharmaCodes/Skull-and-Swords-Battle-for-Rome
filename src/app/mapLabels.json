@@ -1,0 +1,269 @@
+{
+  "sea": [
+    {
+      "name": "MEDITERRANEAN SEA",
+      "x": 1128.8,
+      "y": 1277.7,
+      "angle": 0,
+      "size": 22
+    },
+    {
+      "name": "OCEANUS ATLANTICUS",
+      "x": 470.1,
+      "y": 823.6,
+      "angle": -50,
+      "size": 24
+    },
+    {
+      "name": "PONTUS EUXINUS",
+      "x": 1566.6,
+      "y": 987.1,
+      "angle": 4,
+      "size": 18
+    },
+    {
+      "name": "MARE CASPIUM",
+      "x": 1984.6,
+      "y": 952.5,
+      "angle": 80,
+      "size": 18
+    },
+    {
+      "name": "NORTH SEA",
+      "x": 894.2,
+      "y": 498.2,
+      "angle": 12,
+      "size": 18
+    },
+    {
+      "name": "MARE BALTICUM",
+      "x": 1214.0,
+      "y": 512.5,
+      "angle": 30,
+      "size": 18
+    },
+    {
+      "name": "SINUS PERSICUS",
+      "x": 2158.3,
+      "y": 1439.3,
+      "angle": -38,
+      "size": 18
+    },
+    {
+      "name": "SINUS ARABICUS",
+      "x": 1719.9,
+      "y": 1675.6,
+      "angle": -55,
+      "size": 20
+    },
+    {
+      "name": "ARABIAN SEA",
+      "x": 2423.0,
+      "y": 1706.3,
+      "angle": 20,
+      "size": 20
+    }
+  ],
+  "mountain": [
+    {
+      "name": "ATLAS MOUNTAINS",
+      "x": 487.4,
+      "y": 1267.4,
+      "angle": 18
+    },
+    {
+      "name": "PYRENEES",
+      "x": 703.4,
+      "y": 952.2,
+      "angle": -4
+    },
+    {
+      "name": "ALPS",
+      "x": 963.0,
+      "y": 870.9,
+      "angle": 12
+    },
+    {
+      "name": "APENNINES",
+      "x": 1017.6,
+      "y": 1010.0,
+      "angle": -52
+    },
+    {
+      "name": "CARPATHIANS",
+      "x": 1288.1,
+      "y": 862.6,
+      "angle": -25
+    },
+    {
+      "name": "DINARIC ALPS",
+      "x": 1134.6,
+      "y": 996.7,
+      "angle": -40
+    },
+    {
+      "name": "BALKAN MOUNTAINS",
+      "x": 1330.9,
+      "y": 1026.9,
+      "angle": -2
+    },
+    {
+      "name": "SCANDINAVIAN MOUNTAINS",
+      "x": 1111.6,
+      "y": 277.3,
+      "angle": 55
+    },
+    {
+      "name": "SCOTTISH HIGHLANDS",
+      "x": 766.0,
+      "y": 432.6,
+      "angle": 38
+    },
+    {
+      "name": "CAUCASUS",
+      "x": 1823.3,
+      "y": 974.4,
+      "angle": -22
+    },
+    {
+      "name": "PONTIC MOUNTAINS",
+      "x": 1637.9,
+      "y": 1070.0,
+      "angle": 2
+    },
+    {
+      "name": "TAURUS MOUNTAINS",
+      "x": 1577.9,
+      "y": 1201.6,
+      "angle": 14
+    },
+    {
+      "name": "ZAGROS MOUNTAINS",
+      "x": 2061.2,
+      "y": 1301.3,
+      "angle": -48
+    },
+    {
+      "name": "ELBURZ MOUNTAINS",
+      "x": 2088.2,
+      "y": 1133.0,
+      "angle": 5
+    },
+    {
+      "name": "LEBANON MOUNTAINS",
+      "x": 1647.0,
+      "y": 1306.7,
+      "angle": 65
+    },
+    {
+      "name": "JUDEAN HIGHLANDS",
+      "x": 1632.2,
+      "y": 1397.1,
+      "angle": 85
+    },
+    {
+      "name": "SARAWAT MOUNTAINS",
+      "x": 1880.1,
+      "y": 1774.8,
+      "angle": -60
+    }
+  ],
+  "river": [
+    {
+      "name": "Danube",
+      "x": 1225.2,
+      "y": 955.8,
+      "angle": -15
+    },
+    {
+      "name": "Rhine",
+      "x": 932.1,
+      "y": 758.5,
+      "angle": -65
+    },
+    {
+      "name": "Nile",
+      "x": 1530.9,
+      "y": 1554.6,
+      "angle": -84
+    },
+    {
+      "name": "Euphrates",
+      "x": 1800.2,
+      "y": 1261.1,
+      "angle": -35
+    },
+    {
+      "name": "Tigris",
+      "x": 1878.0,
+      "y": 1256.1,
+      "angle": -45
+    },
+    {
+      "name": "Volga",
+      "x": 1807.6,
+      "y": 689.8,
+      "angle": -40
+    },
+    {
+      "name": "Dnieper",
+      "x": 1523.2,
+      "y": 833.1,
+      "angle": -50
+    },
+    {
+      "name": "Don",
+      "x": 1704.6,
+      "y": 787.1,
+      "angle": -30
+    },
+    {
+      "name": "Po",
+      "x": 973.7,
+      "y": 925.9,
+      "angle": 0
+    },
+    {
+      "name": "Rh\u00f4ne",
+      "x": 826.5,
+      "y": 905.9,
+      "angle": -75
+    },
+    {
+      "name": "Ebro",
+      "x": 674.5,
+      "y": 988.5,
+      "angle": -35
+    },
+    {
+      "name": "Tagus",
+      "x": 561.9,
+      "y": 1017.9,
+      "angle": -15
+    },
+    {
+      "name": "Seine",
+      "x": 788.0,
+      "y": 743.6,
+      "angle": -30
+    },
+    {
+      "name": "Loire",
+      "x": 748.6,
+      "y": 795.3,
+      "angle": -15
+    },
+    {
+      "name": "Tiber",
+      "x": 999.1,
+      "y": 1032.4,
+      "angle": -55
+    },
+    {
+      "name": "Jordan",
+      "x": 1640.6,
+      "y": 1378.4,
+      "angle": -85
+    }
+  ]
+}

@@ -1,0 +1,386 @@
+[
+  {
+    "id": "hadrian_wall",
+    "name": "Hadrian's Wall (Britannia Frontier)",
+    "points": [
+      [
+        740,
+        470
+      ],
+      [
+        755,
+        472
+      ],
+      [
+        770,
+        473
+      ],
+      [
+        785,
+        470
+      ]
+    ]
+  },
+  {
+    "id": "rhine_limes",
+    "name": "Limes Germanicus (Rhine)",
+    "points": [
+      [
+        875,
+        680
+      ],
+      [
+        895,
+        705
+      ],
+      [
+        925,
+        735
+      ],
+      [
+        945,
+        765
+      ],
+      [
+        955,
+        800
+      ],
+      [
+        965,
+        840
+      ],
+      [
+        960,
+        870
+      ]
+    ]
+  },
+  {
+    "id": "danube_limes",
+    "name": "Danube Frontier",
+    "points": [
+      [
+        960,
+        870
+      ],
+      [
+        1050,
+        890
+      ],
+      [
+        1130,
+        920
+      ],
+      [
+        1225,
+        955
+      ],
+      [
+        1330,
+        965
+      ],
+      [
+        1420,
+        970
+      ],
+      [
+        1500,
+        985
+      ],
+      [
+        1550,
+        990
+      ]
+    ]
+  },
+  {
+    "id": "pyrenees_frontier",
+    "name": "Pyrenees Frontier (Gallia/Hispania)",
+    "points": [
+      [
+        660,
+        940
+      ],
+      [
+        690,
+        948
+      ],
+      [
+        720,
+        955
+      ],
+      [
+        750,
+        965
+      ]
+    ]
+  },
+  {
+    "id": "alps_frontier",
+    "name": "Alpine Frontier (Italia)",
+    "points": [
+      [
+        930,
+        890
+      ],
+      [
+        965,
+        920
+      ],
+      [
+        1000,
+        930
+      ],
+      [
+        1040,
+        935
+      ],
+      [
+        1090,
+        950
+      ]
+    ]
+  },
+  {
+    "id": "hispania_internal_1",
+    "name": "Tarraconensis Border",
+    "points": [
+      [
+        540,
+        980
+      ],
+      [
+        590,
+        1020
+      ],
+      [
+        650,
+        1060
+      ],
+      [
+        710,
+        1090
+      ]
+    ]
+  },
+  {
+    "id": "hispania_internal_2",
+    "name": "Baetica Border",
+    "points": [
+      [
+        510,
+        1070
+      ],
+      [
+        560,
+        1100
+      ],
+      [
+        610,
+        1120
+      ],
+      [
+        660,
+        1140
+      ]
+    ]
+  },
+  {
+    "id": "gallia_internal_1",
+    "name": "Lugdunensis / Aquitania",
+    "points": [
+      [
+        700,
+        820
+      ],
+      [
+        760,
+        840
+      ],
+      [
+        810,
+        850
+      ],
+      [
+        860,
+        880
+      ]
+    ]
+  },
+  {
+    "id": "gallia_internal_2",
+    "name": "Belgica Border",
+    "points": [
+      [
+        780,
+        720
+      ],
+      [
+        830,
+        740
+      ],
+      [
+        880,
+        760
+      ]
+    ]
+  },
+  {
+    "id": "greece_frontier",
+    "name": "Macedonia / Achaea",
+    "points": [
+      [
+        1280,
+        1070
+      ],
+      [
+        1320,
+        1080
+      ],
+      [
+        1360,
+        1070
+      ]
+    ]
+  },
+  {
+    "id": "asia_minor_1",
+    "name": "Galatia / Cappadocia",
+    "points": [
+      [
+        1560,
+        1050
+      ],
+      [
+        1600,
+        1090
+      ],
+      [
+        1640,
+        1120
+      ],
+      [
+        1680,
+        1160
+      ]
+    ]
+  },
+  {
+    "id": "asia_minor_2",
+    "name": "Cilicia Frontier",
+    "points": [
+      [
+        1520,
+        1140
+      ],
+      [
+        1580,
+        1170
+      ],
+      [
+        1650,
+        1200
+      ]
+    ]
+  },
+  {
+    "id": "parthian_frontier",
+    "name": "Euphrates Frontier (Syria/Parthia)",
+    "points": [
+      [
+        1670,
+        1220
+      ],
+      [
+        1730,
+        1250
+      ],
+      [
+        1800,
+        1270
+      ],
+      [
+        1870,
+        1310
+      ],
+      [
+        1950,
+        1370
+      ],
+      [
+        2020,
+        1420
+      ]
+    ]
+  },
+  {
+    "id": "aegyptus_west",
+    "name": "Cyrenaica / Aegyptus Border",
+    "points": [
+      [
+        1380,
+        1420
+      ],
+      [
+        1380,
+        1470
+      ],
+      [
+        1380,
+        1550
+      ]
+    ]
+  },
+  {
+    "id": "aegyptus_east",
+    "name": "Sinai / Aegyptus Frontier",
+    "points": [
+      [
+        1580,
+        1430
+      ],
+      [
+        1610,
+        1470
+      ],
+      [
+        1630,
+        1520
+      ],
+      [
+        1650,
+        1580
+      ]
+    ]
+  },
+  {
+    "id": "africa_limes",
+    "name": "Limes Tripolitanus (Africa)",
+    "points": [
+      [
+        580,
+        1280
+      ],
+      [
+        720,
+        1290
+      ],
+      [
+        880,
+        1310
+      ],
+      [
+        1050,
+        1330
+      ],
+      [
+        1200,
+        1360
+      ],
+      [
+        1320,
+        1390
+      ]
+    ]
+  }
+]
