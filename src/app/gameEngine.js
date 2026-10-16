@@ -58,10 +58,10 @@ export const UNIT_TYPES = {
     title: 'Roman Scout Cavalry',
     icon: '🐎',
     cost: 50,
-    baseSpeedKmPerMin: 350, // 350 km per minute (turn)
+    baseSpeedKmPerMin: 150, // 150 km per month (turn)
     baseVisionRadiusKm: 150, // Uniform base vision radius (~87 map pixels)
     visionRadiusPerLevel: 35, // +35 km per level up
-    description: 'Rapid mounted reconnaissance unit. Traverses 350 km/turn across open plains and reveals terra incognita.',
+    description: 'Rapid mounted reconnaissance unit. Traverses 150 km/month across open plains and reveals terra incognita.',
   },
   // Extensible for future unit types:
   cohort: {
@@ -277,7 +277,7 @@ function smoothPath(points) {
 }
 
 // Calculate total length in km and terrain travel time in minutes (turns)
-export function analyzeRoute(path, baseSpeedKmPerMin = 350) {
+export function analyzeRoute(path, baseSpeedKmPerMin = 150) {
   if (!path || path.length < 2) return { distanceKm: 0, turnsEta: 0, segments: [] };
   let totalKm = 0;
   let totalMinutes = 0;

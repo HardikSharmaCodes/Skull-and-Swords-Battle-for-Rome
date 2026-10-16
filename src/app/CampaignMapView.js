@@ -8,7 +8,6 @@ import {
   MAP_WIDTH,
   MAP_HEIGHT,
   KM_PER_PIXEL,
-  UNIT_TYPES,
   getElevationAt,
   getTerrainSpeedMultiplier,
   getTerrainClassification,
@@ -16,8 +15,11 @@ import {
   analyzeRoute,
   RomanAudio,
 } from './gameEngine';
+import RomanSettlementBar from './RomanSettlementBar';
+import RomanArmyBar, { UNIT_CLASSES, HIRABLE_UNITS } from './RomanArmyBar';
+import BattleModal, { generateGarrison } from './BattleModal';
 
-// Path2D cache for instant, zero-cost polygon fills, hover lightening and fog clearance
+// Path2D cache for instant, zero-cost polygon fills & hover effects
 const pathCache = new Map();
 function getRegionPath(pathD) {
   if (!pathD) return null;
@@ -31,6 +33,19 @@ function getRegionPath(pathD) {
     }
   }
   return p;
+}
+
+// Check if a mouse event target belongs to any UI layer (prevents map click-through & deselection)
+function isInsideUiLayer(target) {
+  if (!target) return false;
+  let curr = target.nodeType === 1 ? target : target.parentElement;
+  while (curr) {
+    if (curr.getAttribute && curr.getAttribute('data-ui-layer') === 'true') {
+      return true;
+    }
+    curr = curr.parentElement;
+  }
+  return false;
 }
 
 // Marker style dictionary for historical settlement types
@@ -194,14 +209,248 @@ function drawMarker(ctx, x, y, type, r) {
   }
 }
 
-// Pre-compute site thresholds
+// Tactical Map Pointer Marker for Roman Reconnaissance Units
+function drawMapPointer(ctx, sx, sy, isSelected, isMarching, scout, now, headingAngle) {
+  const trot = isMarching ? Math.sin(now * 0.02) * 2.5 : 0;
+  const py = sy + trot;
+
+  ctx.save();
+
+  // Drop shadow on ground under pointer tip
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.beginPath();
+  ctx.ellipse(sx, sy + 2, 9, 3.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pulsing golden beacon halo when selected
+  if (isSelected) {
+    const pulse = (Math.sin(now * 0.007) + 1) / 2;
+    ctx.strokeStyle = `rgba(255, 215, 0, ${0.45 + pulse * 0.5})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 2, 14 + pulse * 6, 6 + pulse * 2.5, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Pointer Body
+  ctx.beginPath();
+  ctx.moveTo(sx, py);
+  ctx.bezierCurveTo(sx - 4, py - 11, sx - 14, py - 18, sx - 14, py - 27);
+  ctx.arc(sx, py - 27, 14, Math.PI, 0, false);
+  ctx.bezierCurveTo(sx + 14, py - 18, sx + 4, py - 11, sx, py);
+  ctx.closePath();
+
+  // Roman Crimson gradient
+  const grad = ctx.createLinearGradient(sx, py - 42, sx, py);
+  grad.addColorStop(0, isSelected ? '#b8271d' : '#8e1b12');
+  grad.addColorStop(0.65, '#6b110b');
+  grad.addColorStop(1, '#420804');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.strokeStyle = isSelected ? '#ffffff' : '#ffd700';
+  ctx.lineWidth = isSelected ? 2.5 : 2;
+  ctx.stroke();
+
+  // Inner emblem
+  ctx.beginPath();
+  ctx.arc(sx, py - 27, 9.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#22110c';
+  ctx.fill();
+  ctx.strokeStyle = '#d4a34b';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Cavalry icon
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🐎', sx, py - 27);
+
+  // Directional arrow if marching
+  if (isMarching && headingAngle != null) {
+    ctx.save();
+    ctx.translate(sx, py - 46);
+    ctx.rotate(headingAngle);
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.lineTo(4, 2);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(-4, 2);
+    ctx.closePath();
+    ctx.fillStyle = '#ffd700';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Level Badge
+  ctx.font = "bold 9px 'Cinzel', serif";
+  ctx.fillStyle = '#ffe18f';
+  ctx.textAlign = 'center';
+  ctx.fillText(`★ Lv.${scout.level}`, sx, py + 14);
+
+  // Unit Name Label
+  ctx.font = "bold 11px 'Cinzel', serif";
+  ctx.strokeStyle = 'rgba(0,0,0,0.92)';
+  ctx.lineWidth = 3;
+  ctx.strokeText(scout.name, sx, py - 44);
+  ctx.fillStyle = isSelected ? '#ffe18f' : '#ffffff';
+  ctx.fillText(scout.name, sx, py - 44);
+
+  ctx.restore();
+}
+
+// Roman Vexillum (Military Banner) for Army Generals ─────────────────────────
+function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, headingAngle) {
+  const sway = isMarching ? Math.sin(now * 0.014) * 2.0 : 0;
+  const py = sy + sway;
+
+  ctx.save();
+
+  // Ground shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.40)';
+  ctx.beginPath();
+  ctx.ellipse(sx, sy + 3, 14, 4.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pulsing gold halo when selected
+  if (isSelected) {
+    const pulse = (Math.sin(now * 0.006) + 1) / 2;
+    ctx.strokeStyle = `rgba(255,215,0,${0.5 + pulse * 0.45})`;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 3, 18 + pulse * 7, 7 + pulse * 3, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Pole (vertical staff)
+  const poleTop = py - 64;
+  const poleBot = py + 2;
+  const poleGrad = ctx.createLinearGradient(sx - 2, 0, sx + 2, 0);
+  poleGrad.addColorStop(0, '#c4a028');
+  poleGrad.addColorStop(0.5, '#ffd700');
+  poleGrad.addColorStop(1, '#8a6c10');
+  ctx.beginPath();
+  ctx.moveTo(sx - 2, poleTop);
+  ctx.lineTo(sx - 2, poleBot);
+  ctx.lineTo(sx + 2, poleBot);
+  ctx.lineTo(sx + 2, poleTop);
+  ctx.closePath();
+  ctx.fillStyle = poleGrad;
+  ctx.fill();
+
+  // Eagle finial on top of pole
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🦅', sx, poleTop - 7);
+
+  // Horizontal cross-arm (transverse)
+  const armY = poleTop + 6;
+  ctx.beginPath();
+  ctx.rect(sx - 18, armY - 2, 36, 4);
+  ctx.fillStyle = '#ffd700';
+  ctx.fill();
+  ctx.strokeStyle = '#8a6c10';
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  // Banner Cloth rectangle hanging from cross-arm
+  const bannerTop = armY + 2;
+  const bannerH = 28;
+  const bannerW = 34;
+
+  // Cloth gradient — crimson/scarlet
+  const clothGrad = ctx.createLinearGradient(sx - bannerW / 2, bannerTop, sx + bannerW / 2, bannerTop + bannerH);
+  clothGrad.addColorStop(0, isSelected ? '#d0221a' : '#9e1b12');
+  clothGrad.addColorStop(0.5, '#7a1209');
+  clothGrad.addColorStop(1, '#4a0a06');
+  ctx.beginPath();
+  ctx.rect(sx - bannerW / 2, bannerTop, bannerW, bannerH);
+  ctx.fillStyle = clothGrad;
+  ctx.fill();
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // Golden SPQR text inside cloth banner
+  ctx.font = "bold 7px 'Cinzel', serif";
+  ctx.fillStyle = '#ffd700';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('SPQR', sx, bannerTop + 8);
+
+  // Eagle / Legion symbol in banner center
+  ctx.font = '10px sans-serif';
+  ctx.fillText('⚔️', sx, bannerTop + 20);
+
+  // Tassel fringe at bottom of banner
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 7; i++) {
+    const tx = (sx - bannerW / 2) + 2 + i * (bannerW - 4) / 6;
+    ctx.beginPath();
+    ctx.moveTo(tx, bannerTop + bannerH);
+    ctx.lineTo(tx, bannerTop + bannerH + 5);
+    ctx.stroke();
+  }
+
+  // Directional arrow if marching
+  if (isMarching && headingAngle != null) {
+    ctx.save();
+    ctx.translate(sx, py - 68);
+    ctx.rotate(headingAngle);
+    ctx.beginPath();
+    ctx.moveTo(0, -7);
+    ctx.lineTo(5, 2);
+    ctx.lineTo(0, -1);
+    ctx.lineTo(-5, 2);
+    ctx.closePath();
+    ctx.fillStyle = '#ffd700';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Unit count badge (number of cohorts)
+  const unitCount = general.units ? general.units.length : 0;
+  if (unitCount > 0) {
+    ctx.beginPath();
+    ctx.arc(sx + 17, poleTop - 1, 9, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffd700';
+    ctx.fill();
+    ctx.strokeStyle = '#1a0d02';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.font = "bold 8px 'Cinzel', serif";
+    ctx.fillStyle = '#1a0d02';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(unitCount, sx + 17, poleTop - 1);
+  }
+
+  // General name label above banner
+  const shortName = general.name.length > 18 ? general.name.substring(0, 16) + '…' : general.name;
+  ctx.font = "bold 10px 'Cinzel', serif";
+  ctx.strokeStyle = 'rgba(0,0,0,0.95)';
+  ctx.lineWidth = 3;
+  ctx.strokeText(shortName, sx, poleTop - 18);
+  ctx.fillStyle = isSelected ? '#ffd700' : '#ffffff';
+  ctx.fillText(shortName, sx, poleTop - 18);
+
+  ctx.restore();
+}
+
+// Pre-compute site zoom thresholds
 const SITES = ancientSites.map(s => ({
   ...s,
   minZoom: minZoomForWeight(s.weight),
   minLabelZoom: minZoomForLabel(s.weight),
 }));
 
-export default function CampaignMapViewer({ onExitToMenu }) {
+const romeRegion = regionsData.regions.find(r => r.id === 1) || regionsData.regions[0];
+const initialKnownIds = new Set([romeRegion.id, ...(romeRegion.neighbors || [])]);
+
+export default function CampaignMapView({ onExitToMenu }) {
   const containerRef    = useRef(null);
   const svgContainerRef = useRef(null);
   const svgElRef        = useRef(null);
@@ -209,41 +458,31 @@ export default function CampaignMapViewer({ onExitToMenu }) {
   const fogCanvasRef    = useRef(null); // canvas for Fog of War / Terra Incognita
   const unitsCanvasRef  = useRef(null); // canvas for scouts, march paths & orders
   const sitesCanvasRef  = useRef(null); // canvas for markers & names
+  const minimapCanvasRef= useRef(null);
 
   const cam = useRef({ x: 0, y: 0, zoom: 1, minZoom: 0.4, maxZoom: 32.0 });
   const keys = useRef({ w: false, a: false, s: false, d: false,
     ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false });
-  const drag = useRef({ isDragging: false, lastX: 0, lastY: 0, downX: 0, downY: 0 });
+  const drag = useRef({ isDragging: false, wasDownOnMap: false, lastX: 0, lastY: 0, downX: 0, downY: 0 });
 
-  // Map Visual Mode: 'terrain' | 'vintage'
-  const [visualMode, setVisualMode] = useState('vintage'); // Default to paper style as requested!
+  // Map Visual Mode: 'vintage' | 'terrain'
+  const [visualMode, setVisualMode] = useState('vintage');
   const visualModeRef = useRef('vintage');
 
   const [showBorders, setShowBorders] = useState(true);
   const showBordersRef = useRef(true);
 
   // Fog of War / Exploration System
-  // Starting province (Rome: ID 1) knows all about the states around its borders
-  const romeRegion = regionsData.regions.find(r => r.id === 1) || regionsData.regions[0];
-  const initialKnownIds = new Set([romeRegion.id, ...(romeRegion.neighbors || [])]);
-
   const [fogEnabled, setFogEnabled] = useState(true);
   const fogEnabledRef = useRef(true);
   const [discoveredIds, setDiscoveredIds] = useState(initialKnownIds);
   const discoveredIdsRef = useRef(initialKnownIds);
 
-  // Pathfinding Mode: 'terrain' (smart, avoids mountains/sea) vs 'direct'
+  // Pathfinding Mode: 'terrain' vs 'direct'
   const [pathfindingMode, setPathfindingMode] = useState('terrain');
   const pathfindingModeRef = useRef('terrain');
 
-  // Turn Simulation Clock: 1 Turn = 1 Minute
-  const [turn, setTurn] = useState(1);
-  const [isAutoPlaying, setIsAutoPlaying] = useState(false);
-  const [autoSpeed, setAutoSpeed] = useState(1); // 1x | 2x | 5x
-  const autoPlayRef = useRef(false);
-
-  // Scouts / Units Management
-  // Starts with 1 Roman Scout Equites deployed at Rome
+  // Scouts Management
   const [scouts, setScouts] = useState([
     {
       id: 'scout-1',
@@ -256,24 +495,55 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       routeInfo: null,
       status: 'idle',
       distanceTraveledKm: 0,
-      baseSpeedKmPerMin: 350, // 350 km per minute
-      visionRadiusKm: 150, // uniform base vision
+      baseSpeedKmPerMin: 150,
+      visionRadiusKm: 150,
       visionRadiusPx: Math.round(150 / KM_PER_PIXEL),
     }
   ]);
   const scoutsRef = useRef(scouts);
-  scoutsRef.current = scouts;
+
+  useEffect(() => {
+    scoutsRef.current = scouts;
+  }, [scouts]);
 
   const [selectedScoutId, setSelectedScoutId] = useState('scout-1');
   const selectedScoutRef = useRef('scout-1');
   const lastTickTimeRef = useRef(null);
-  const marchDistAccumRef = useRef(0);
 
-  // Selected province state
+  // Generals / Army Management
+  const [generals, setGenerals] = useState([]);
+  const generalsRef = useRef([]);
+  useEffect(() => { generalsRef.current = generals; }, [generals]);
+
+  const [selectedGeneralId, setSelectedGeneralId] = useState(null);
+  const selectedGeneralRef = useRef(null);
+
+  // Selected Province
   const [selectedProvince, setSelectedProvince] = useState(null);
   const selectedProvinceRef = useRef(null);
 
-  // Notifications / Discovered Toasts
+  // Minimap & Persistent Fog Exploration Mask Refs
+  const minimapBaseRef     = useRef(null);
+  const minimapDraggingRef = useRef(false);
+  const exploredMaskRef    = useRef(null);
+
+  // Conquered territory tracking: Map<regionId, 'rome'>
+  const [conqueredRegions, setConqueredRegions] = useState(new Map([[1, 'rome']]));
+  const conqueredRegionsRef = useRef(new Map([[1, 'rome']]));
+  useEffect(() => { conqueredRegionsRef.current = conqueredRegions; }, [conqueredRegions]);
+
+  // Persistent Settlement Garrisons: Map<siteId, { cohortCount, units, totalMen }>
+  const [settlementGarrisons, setSettlementGarrisons] = useState(new Map());
+  const settlementGarrisonsRef = useRef(new Map());
+  useEffect(() => { settlementGarrisonsRef.current = settlementGarrisons; }, [settlementGarrisons]);
+
+  // War Declaration Prompt State: { general, site, screenX, screenY }
+  const [warDeclarationPrompt, setWarDeclarationPrompt] = useState(null);
+
+  // Battle Modal State: { attacker, defSite, defWeight, elevation, existingGarrison }
+  const [battleModal, setBattleModal] = useState(null);
+
+  // Notifications
   const [toasts, setToasts] = useState([]);
   const addToast = useCallback((msg, type = 'info') => {
     const id = Date.now() + Math.random();
@@ -292,17 +562,134 @@ export default function CampaignMapViewer({ onExitToMenu }) {
     culture: null,
   });
   const hoverRef = useRef({ elevation: null, terrain: null, coord: null, territory: null, culture: null });
-
   const [tooltip, setTooltip] = useState(null);
   const hoveredSiteRef = useRef(null);
   const hoveredRegionRef = useRef(null);
 
-  // Apply visual mode & border layer visibility to SVG
-  const applySvgState = (mode, bordersOn) => {
-    visualModeRef.current = mode;
-    showBordersRef.current = bordersOn;
-    if (!svgElRef.current) return;
+  // Initialize or get persistent explored mask canvas
+  const getExploredMask = useCallback(() => {
+    if (exploredMaskRef.current) return exploredMaskRef.current;
+    if (typeof window === 'undefined') return null;
 
+    const mCanvas = document.createElement('canvas');
+    mCanvas.width = MAP_WIDTH;
+    mCanvas.height = MAP_HEIGHT;
+    const mctx = mCanvas.getContext('2d');
+
+    mctx.fillStyle = '#000000';
+    mctx.fillRect(0, 0, MAP_WIDTH, MAP_HEIGHT);
+
+    mctx.fillStyle = '#ffffff';
+    mctx.strokeStyle = '#ffffff';
+    mctx.lineWidth = 100;
+    mctx.lineJoin = 'round';
+    mctx.lineCap = 'round';
+
+    for (const reg of regionsData.regions) {
+      if (initialKnownIds.has(reg.id)) {
+        if (reg.pathD) {
+          const p = getRegionPath(reg.pathD);
+          if (p) {
+            mctx.fill(p);
+            mctx.stroke(p);
+          }
+        }
+        mctx.beginPath();
+        mctx.arc(reg.center[0], reg.center[1], 160, 0, Math.PI * 2);
+        mctx.fill();
+      }
+    }
+
+    // Initial scout vision sphere at Rome
+    mctx.beginPath();
+    mctx.arc(romeRegion.center[0], romeRegion.center[1], Math.round(150 / KM_PER_PIXEL) + 25, 0, Math.PI * 2);
+    mctx.fill();
+
+    exploredMaskRef.current = mCanvas;
+    return mCanvas;
+  }, []);
+
+  const stampScoutVisionToMask = useCallback((x, y, radiusPx) => {
+    const mask = exploredMaskRef.current || getExploredMask();
+    if (!mask) return;
+    const mctx = mask.getContext('2d');
+    mctx.fillStyle = '#ffffff';
+    mctx.beginPath();
+    mctx.arc(x, y, radiusPx, 0, Math.PI * 2);
+    mctx.fill();
+  }, [getExploredMask]);
+
+  // Pre-render static minimap
+  const getMinimapBase = useCallback(() => {
+    if (minimapBaseRef.current) return minimapBaseRef.current;
+    if (typeof window === 'undefined') return null;
+
+    const mCanvas = document.createElement('canvas');
+    mCanvas.width = 236;
+    mCanvas.height = 200;
+    const ctx = mCanvas.getContext('2d');
+
+    ctx.save();
+    ctx.scale(236 / MAP_WIDTH, 200 / MAP_HEIGHT);
+
+    for (const reg of regionsData.regions) {
+      if (reg.pathD) {
+        const p = getRegionPath(reg.pathD);
+        if (p) {
+          ctx.fillStyle = reg.color || '#5a4632';
+          ctx.fill(p);
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+          ctx.lineWidth = 1.0;
+          ctx.stroke(p);
+        }
+      }
+    }
+
+    for (const site of ancientSites) {
+      if (site.weight >= 6) {
+        ctx.fillStyle = '#ffd700';
+        ctx.beginPath();
+        ctx.arc(site.x, site.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+    minimapBaseRef.current = mCanvas;
+    return mCanvas;
+  }, []);
+
+  // Minimap pan / click handler
+  const handleMinimapPan = useCallback((clientX, clientY) => {
+    const canvas = minimapCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const clickX = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const clickY = Math.max(0, Math.min(rect.height, clientY - rect.top));
+
+    const targetMapX = (clickX / rect.width) * MAP_WIDTH;
+    const targetMapY = (clickY / rect.height) * MAP_HEIGHT;
+
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const c = cam.current;
+    c.x = vw / 2 - targetMapX * c.zoom;
+    c.y = vh / 2 - targetMapY * c.zoom;
+
+    const curW = MAP_WIDTH * c.zoom, curH = MAP_HEIGHT * c.zoom;
+    if (curW < vw) c.x = (vw - curW) / 2;
+    else c.x = Math.max(vw - curW - 80, Math.min(80, c.x));
+    if (curH < vh) c.y = (vh - curH) / 2;
+    else c.y = Math.max(vh - curH - 80, Math.min(80, c.y));
+
+    if (svgElRef.current) {
+      svgElRef.current.setAttribute('viewBox',
+        `${-c.x / c.zoom} ${-c.y / c.zoom} ${vw / c.zoom} ${vh / c.zoom}`);
+    }
+  }, []);
+
+  // Toggle SVG layers
+  const applySvgState = (mode, bordersOn) => {
+    if (!svgElRef.current) return;
     const terrainG = svgElRef.current.querySelector('#terrain');
     const vintageG = svgElRef.current.querySelector('#vintage-paper');
     const bordersG = svgElRef.current.querySelector('#watershed-borders');
@@ -330,7 +717,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
     applySvgState(visualMode, showBorders);
   }, [visualMode, showBorders]);
 
-  // Load clean SVG inline
+  // Load SVG inline
   useEffect(() => {
     fetch('/campaign_map.svg')
       .then(r => r.text())
@@ -352,155 +739,8 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       });
   }, []);
 
-  // ─── Turn / Minute Simulation Action ──────────────────────────────────────────
-  const advanceTurn = useCallback(() => {
-    setTurn(prevTurn => {
-      const nextTurn = prevTurn + 1;
-      RomanAudio.playMarch();
-
-      setScouts(currentScouts => {
-        let anyNewDiscovery = false;
-        const newDiscovered = new Set(discoveredIdsRef.current);
-
-        const updated = currentScouts.map(scout => {
-          if (!scout.path || scout.path.length < 2) return scout;
-
-          // Scout travels 350 km per minute budget
-          const baseBudgetKm = scout.baseSpeedKmPerMin;
-          let remainingBudgetKm = baseBudgetKm;
-          let curX = scout.x;
-          let curY = scout.y;
-          let path = [...scout.path];
-          let distTraveled = scout.distanceTraveledKm;
-
-          while (path.length >= 2 && remainingBudgetKm > 0.5) {
-            const p0 = path[0];
-            const p1 = path[1];
-            const segDistPx = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-            const segDistKm = segDistPx * KM_PER_PIXEL;
-
-            const midElev = getElevationAt((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
-            const terrainMult = Math.max(0.18, getTerrainSpeedMultiplier(midElev));
-            // Effective distance budget on this terrain
-            const effectiveSegDistKm = segDistKm / terrainMult;
-
-            if (remainingBudgetKm >= effectiveSegDistKm) {
-              // Finish this segment
-              curX = p1.x;
-              curY = p1.y;
-              distTraveled += Math.round(segDistKm);
-              remainingBudgetKm -= effectiveSegDistKm;
-              path.shift();
-            } else {
-              // Partial advance along segment
-              const fraction = remainingBudgetKm / effectiveSegDistKm;
-              curX = p0.x + (p1.x - p0.x) * fraction;
-              curY = p0.y + (p1.y - p0.y) * fraction;
-              distTraveled += Math.round(segDistKm * fraction);
-              path[0] = { x: curX, y: curY };
-              remainingBudgetKm = 0;
-            }
-          }
-
-          const hasFinished = path.length < 2;
-
-          // Check province discovery within scout's vision circle
-          for (const reg of regionsData.regions) {
-            if (!newDiscovered.has(reg.id)) {
-              const dx = curX - reg.center[0];
-              const dy = curY - reg.center[1];
-              const distPx = Math.hypot(dx, dy);
-              if (distPx <= scout.visionRadiusPx + 15) {
-                newDiscovered.add(reg.id);
-                anyNewDiscovery = true;
-                addToast(`🏛️ New Province Discovered: ${reg.site} (${reg.sovereignName})`, 'success');
-              }
-            }
-          }
-
-          const route = hasFinished ? null : analyzeRoute(path, scout.baseSpeedKmPerMin);
-
-          return {
-            ...scout,
-            x: curX,
-            y: curY,
-            path: hasFinished ? [] : path,
-            routeInfo: route,
-            status: hasFinished ? 'idle' : 'marching',
-            distanceTraveledKm: distTraveled,
-          };
-        });
-
-        if (anyNewDiscovery) {
-          RomanAudio.playDiscovery();
-          discoveredIdsRef.current = newDiscovered;
-          setDiscoveredIds(newDiscovered);
-        }
-
-        return updated;
-      });
-
-      return nextTurn;
-    });
-  }, [addToast]);
-
-  // Auto-play timer loop
-  useEffect(() => {
-    if (!isAutoPlaying) return;
-    autoPlayRef.current = true;
-    const intervalMs = Math.max(300, 1000 / autoSpeed);
-    const timer = setInterval(() => {
-      advanceTurn();
-    }, intervalMs);
-    return () => clearInterval(timer);
-  }, [isAutoPlaying, autoSpeed, advanceTurn]);
-
-  // ─── Scout Actions: Recruit & Level Up ───────────────────────────────────────
-  const handleRecruitScout = (sourceProvince) => {
-    const prov = sourceProvince || romeRegion;
-    const newIdx = scoutsRef.current.length + 1;
-    const newScout = {
-      id: `scout-${newIdx}`,
-      name: `${['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'][newIdx - 1] || 'Cohors'} Equites Speculatores (${prov.site})`,
-      level: 1,
-      x: prov.center[0],
-      y: prov.center[1],
-      target: null,
-      path: [],
-      routeInfo: null,
-      status: 'idle',
-      distanceTraveledKm: 0,
-      baseSpeedKmPerMin: 350,
-      visionRadiusKm: 150,
-      visionRadiusPx: Math.round(150 / KM_PER_PIXEL),
-    };
-
-    RomanAudio.playRecruit();
-    setScouts(prev => [...prev, newScout]);
-    setSelectedScoutId(newScout.id);
-    selectedScoutRef.current = newScout.id;
-    addToast(`🎺 Recruited ${newScout.name} at ${prov.site}! (350 km/turn speed)`, 'success');
-  };
-
-  const handleLevelUpScout = (scoutId) => {
-    setScouts(prev => prev.map(s => {
-      if (s.id !== scoutId) return s;
-      const nextLvl = s.level + 1;
-      const nextRadiusKm = s.visionRadiusKm + 35;
-      const nextRadiusPx = Math.round(nextRadiusKm / KM_PER_PIXEL);
-      RomanAudio.playDiscovery();
-      addToast(`⭐ ${s.name} promoted to Level ${nextLvl}! Vision sphere expanded to ${nextRadiusKm} km (+35 km)`, 'success');
-      return {
-        ...s,
-        level: nextLvl,
-        visionRadiusKm: nextRadiusKm,
-        visionRadiusPx: nextRadiusPx,
-      };
-    }));
-  };
-
   // ─── Set Scout Destination & Order March ─────────────────────────────────────
-  const handleOrderMarch = (targetX, targetY) => {
+  const handleOrderMarch = useCallback((targetX, targetY) => {
     const currentScout = scoutsRef.current.find(s => s.id === selectedScoutRef.current);
     if (!currentScout) return;
 
@@ -519,10 +759,208 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       };
     }));
 
-    addToast(`🏇 Route plotted: ${route.distanceKm} km (Est. ${route.turnsEta} minutes / turns)`, 'info');
-  };
+    addToast(`🏇 Route plotted: ${route.distanceKm} km (Est. ${route.turnsEta} months / turns)`, 'info');
+  }, [addToast]);
 
-  // ─── Main High-Performance Canvas Rendering Loop ─────────────────────────────
+  // ─── Hire Scout & Raise General Handlers ─────────────────────────────────────
+  const handleHireScout = useCallback((candidate) => {
+    const prov = selectedProvinceRef.current || romeRegion;
+    const newId = `scout-${Date.now()}`;
+    const newScout = {
+      id: newId,
+      name: `${candidate.name} (Scout)`,
+      level: 1,
+      x: prov.center[0],
+      y: prov.center[1],
+      target: null,
+      path: [],
+      routeInfo: null,
+      status: 'idle',
+      distanceTraveledKm: 0,
+      baseSpeedKmPerMin: 150,
+      visionRadiusKm: 150,
+      visionRadiusPx: Math.round(150 / KM_PER_PIXEL),
+    };
+    setScouts(prev => [...prev, newScout]);
+    setSelectedScoutId(newId);
+    selectedScoutRef.current = newId;
+    stampScoutVisionToMask(newScout.x, newScout.y, newScout.visionRadiusPx);
+    addToast(`🐎 Scout ${candidate.name} mustered at ${prov.site}!`, 'success');
+  }, [addToast, stampScoutVisionToMask]);
+
+  const handleRaiseGeneral = useCallback((candidate) => {
+    const prov = selectedProvinceRef.current || romeRegion;
+    const newId = `general-${Date.now()}`;
+    const newGeneral = {
+      id: newId,
+      name: `General ${candidate.name}`,
+      role: 'Legatus Legionis',
+      legionName: null,
+      provinceId: prov.id,
+      provinceName: prov.site,
+      x: prov.center[0],
+      y: prov.center[1],
+      target: null,
+      path: [],
+      routeInfo: null,
+      status: 'idle',
+      distanceTraveledKm: 0,
+      baseSpeedKmPerMin: 38,   // Legions march ~38 km/day — much slower than scouts
+      maxUnits: 20,
+      units: [],
+    };
+    setGenerals(prev => [...prev, newGeneral]);
+    setSelectedGeneralId(newId);
+    selectedGeneralRef.current = newId;
+    setSelectedScoutId(null);
+    selectedScoutRef.current = null;
+    setSelectedProvince(null);
+    selectedProvinceRef.current = null;
+    addToast(`🦅 ${newGeneral.name} raised at ${prov.site} — Legion banner planted!`, 'success');
+  }, [addToast]);
+
+  const handleRecruitUnit = useCallback((newUnit) => {
+    if (!selectedGeneralRef.current) return;
+    const targetGenId = selectedGeneralRef.current;
+    setGenerals(prev => prev.map(g => {
+      if (g.id !== targetGenId) return g;
+      if ((g.units || []).length >= (g.maxUnits || 20)) return g;
+      return { ...g, units: [...(g.units || []), newUnit] };
+    }));
+    const gRef = generalsRef.current.find(g => g.id === targetGenId);
+    if (gRef && (gRef.units || []).length < (gRef.maxUnits || 20)) {
+      gRef.units = [...(gRef.units || []), newUnit];
+    }
+    RomanAudio.playMarch();
+    addToast(`🛡️ ${newUnit.name} (1,000 troops) equipped to legion!`, 'success');
+  }, [addToast]);
+
+  const handleDisbandUnit = useCallback((unitId) => {
+    if (!selectedGeneralRef.current) return;
+    const targetGenId = selectedGeneralRef.current;
+    setGenerals(prev => prev.map(g => {
+      if (g.id !== targetGenId) return g;
+      return { ...g, units: (g.units || []).filter(u => u.id !== unitId) };
+    }));
+    const gRef = generalsRef.current.find(g => g.id === targetGenId);
+    if (gRef) {
+      gRef.units = (gRef.units || []).filter(u => u.id !== unitId);
+    }
+    RomanAudio.playClick();
+    addToast('Cohort disbanded from legion.', 'info');
+  }, [addToast]);
+
+  // ─── Handle Go For War – Legion Marches to Settlement Center ────────────────
+  const handleGoForWar = useCallback((general, site) => {
+    // Army marches straight to the settlement center of origin (site.x, site.y)
+    const path = calculatePath(general.x, general.y, site.x, site.y, pathfindingModeRef.current);
+    const route = analyzeRoute(path, general.baseSpeedKmPerMin);
+    RomanAudio.playMarch();
+
+    setGenerals(prev => prev.map(g => {
+      if (g.id !== general.id) return g;
+      return {
+        ...g,
+        target: { x: site.x, y: site.y },
+        path,
+        routeInfo: route,
+        status: 'marching',
+        battleTargetSite: site,
+      };
+    }));
+
+    const gRef = generalsRef.current.find(g => g.id === general.id);
+    if (gRef) {
+      gRef.target = { x: site.x, y: site.y };
+      gRef.path = path;
+      gRef.routeInfo = route;
+      gRef.status = 'marching';
+      gRef.battleTargetSite = site;
+    }
+
+    addToast(`⚔️ WAR DECLARED! ${general.name}'s legion marches on ${site.site}!`, 'error');
+    setWarDeclarationPrompt(null);
+  }, [addToast]);
+
+  // ─── Handle Battle Victory – capture province & eliminate garrison ───────────
+  const handleBattleVictory = useCallback(({ defSite, survivingUnits, atkCasualties, defCasualties }) => {
+    const matchingReg = regionsData.regions.find(r => r.id === defSite.id || r.site === defSite.site);
+    if (matchingReg) {
+      setConqueredRegions(prev => {
+        const next = new Map(prev);
+        next.set(matchingReg.id, 'rome');
+        return next;
+      });
+
+      if (typeof window !== 'undefined') {
+        const svgPath = document.querySelector(`#reg-${matchingReg.id}`);
+        if (svgPath) {
+          svgPath.setAttribute('fill', '#ff1a1a');
+          svgPath.setAttribute('fill-opacity', '0.55');
+        }
+      }
+    }
+
+    // Since soldiers of the garrison were killed in the assault, claimed settlement has 0 garrison
+    const emptyGarrison = { cohortCount: 0, units: [], totalMen: 0 };
+    setSettlementGarrisons(prev => new Map(prev).set(defSite.id, emptyGarrison));
+    settlementGarrisonsRef.current.set(defSite.id, emptyGarrison);
+
+    // Update attacker general's units (depleted health / dead units removed)
+    if (survivingUnits) {
+      const atkGenId = battleModal?.attacker?.id || selectedGeneralRef.current;
+      setGenerals(prev => prev.map(g => {
+        if (g.id !== atkGenId) return g;
+        return { ...g, units: survivingUnits };
+      }));
+      const gRef = generalsRef.current.find(g => g.id === atkGenId);
+      if (gRef) {
+        gRef.units = survivingUnits;
+      }
+    }
+
+    addToast(`🦅 VICTORIA! ${defSite.site} captured for Rome! Garrison eliminated in assault.`, 'success');
+    RomanAudio.playDiscovery();
+  }, [addToast, battleModal]);
+
+  // ─── Handle Battle Defeat – retreat and apply real casualties to both sides ───
+  const handleBattleDefeat = useCallback(({ defSite, survivingUnits, atkCasualties, defCasualties, existingGarrison }) => {
+    // Update attacker general's units (losses taken, destroyed units removed)
+    if (survivingUnits) {
+      const atkGenId = battleModal?.attacker?.id || selectedGeneralRef.current;
+      setGenerals(prev => prev.map(g => {
+        if (g.id !== atkGenId) return g;
+        return { ...g, units: survivingUnits };
+      }));
+      const gRef = generalsRef.current.find(g => g.id === atkGenId);
+      if (gRef) {
+        gRef.units = survivingUnits;
+      }
+    }
+
+    // Deplete defender garrison units based on defCasualties
+    const defCohorts = existingGarrison?.units || [];
+    const lossPerCohort = Math.round((defCasualties || 0) / Math.max(1, defCohorts.length));
+    const survivingDefUnits = [];
+    for (const gu of defCohorts) {
+      const cur = Math.max(0, gu.men ?? gu.count ?? 1000);
+      const remaining = cur - lossPerCohort;
+      if (remaining > 0) {
+        survivingDefUnits.push({ ...gu, men: remaining, count: remaining });
+      }
+    }
+    const updatedGarrison = {
+      cohortCount: survivingDefUnits.length,
+      units: survivingDefUnits,
+      totalMen: survivingDefUnits.reduce((s, u) => s + (u.men || u.count || 0), 0),
+    };
+    setSettlementGarrisons(prev => new Map(prev).set(defSite.id, updatedGarrison));
+    settlementGarrisonsRef.current.set(defSite.id, updatedGarrison);
+
+    addToast(`🛡️ Assault repelled at ${defSite.site}! Roman losses: ${(atkCasualties || 0).toLocaleString()}, Defenders suffered ${(defCasualties || 0).toLocaleString()} losses.`, 'error');
+  }, [addToast, battleModal]);
+
+
   useEffect(() => {
     const container   = containerRef.current;
     const canvas      = canvasRef.current;
@@ -553,7 +991,6 @@ export default function CampaignMapViewer({ onExitToMenu }) {
     let lastHudUpdate = 0;
 
     const tick = (now) => {
-      // ─── Real-Time Slow March Animation (5 sec = 1 month = 350 km) ───
       if (lastTickTimeRef.current == null) lastTickTimeRef.current = now;
       const dt = Math.min(0.08, (now - lastTickTimeRef.current) / 1000);
       lastTickTimeRef.current = now;
@@ -562,12 +999,12 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       const discSet = discoveredIdsRef.current;
       const currentScouts = scoutsRef.current;
 
+      // Real-time Scout March Animation
       for (const scout of currentScouts) {
         if (scout.status === 'marching' && scout.path && scout.path.length >= 2) {
           const elev = getElevationAt(scout.x, scout.y);
           const mult = Math.max(0.18, getTerrainSpeedMultiplier(elev));
-          // Speed: 350 km per 5 seconds = 70 km/sec (slow smooth march)
-          const kmStep = 70.0 * mult * dt;
+          const kmStep = 30.0 * mult * dt;
           let pxStep = kmStep / KM_PER_PIXEL;
 
           while (pxStep > 0.05 && scout.path.length >= 2) {
@@ -578,7 +1015,6 @@ export default function CampaignMapViewer({ onExitToMenu }) {
               scout.y = p1.y;
               const movedKm1 = segDist * KM_PER_PIXEL;
               scout.distanceTraveledKm = (scout.distanceTraveledKm || 0) + movedKm1;
-              marchDistAccumRef.current += movedKm1;
               pxStep -= segDist;
               scout.path.shift();
             } else {
@@ -587,17 +1023,12 @@ export default function CampaignMapViewer({ onExitToMenu }) {
               scout.y += (p1.y - scout.y) * fraction;
               const movedKm = pxStep * KM_PER_PIXEL;
               scout.distanceTraveledKm = (scout.distanceTraveledKm || 0) + movedKm;
-              marchDistAccumRef.current += movedKm;
               scout.path[0] = { x: scout.x, y: scout.y };
               pxStep = 0;
             }
           }
 
-          // Advance month whenever 350 km accumulated
-          if (marchDistAccumRef.current >= 350) {
-            marchDistAccumRef.current -= 350;
-            setTurn(t => t + 1);
-          }
+          stampScoutVisionToMask(scout.x, scout.y, scout.visionRadiusPx);
 
           if (scout.path.length < 2) {
             scout.status = 'idle';
@@ -605,7 +1036,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
             scout.routeInfo = null;
           }
 
-          // Real-time fog of war uncovering
+          // Fog of war discovery
           for (const reg of regionsData.regions) {
             if (!discSet.has(reg.id)) {
               const dist = Math.hypot(scout.x - reg.center[0], scout.y - reg.center[1]);
@@ -624,6 +1055,64 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         setDiscoveredIds(new Set(discSet));
       }
 
+      // Real-time General / Army March Animation (much slower — legion pace)
+      const currentGenerals = generalsRef.current;
+      for (const gen of currentGenerals) {
+        if (gen.status === 'marching' && gen.path && gen.path.length >= 2) {
+          const elev = getElevationAt(gen.x, gen.y);
+          const mult = Math.max(0.12, getTerrainSpeedMultiplier(elev));
+          // Generals march at 38 km/month base speed (~4x slower than scouts)
+          const kmStep = gen.baseSpeedKmPerMin * mult * dt;
+          let pxStep = kmStep / KM_PER_PIXEL;
+
+          while (pxStep > 0.05 && gen.path.length >= 2) {
+            const p1 = gen.path[1];
+            const segDist = Math.hypot(p1.x - gen.x, p1.y - gen.y);
+            if (pxStep >= segDist) {
+              gen.x = p1.x;
+              gen.y = p1.y;
+              gen.distanceTraveledKm = (gen.distanceTraveledKm || 0) + segDist * KM_PER_PIXEL;
+              pxStep -= segDist;
+              gen.path.shift();
+            } else {
+              const fraction = pxStep / segDist;
+              gen.x += (p1.x - gen.x) * fraction;
+              gen.y += (p1.y - gen.y) * fraction;
+              gen.distanceTraveledKm = (gen.distanceTraveledKm || 0) + pxStep * KM_PER_PIXEL;
+              gen.path[0] = { x: gen.x, y: gen.y };
+              pxStep = 0;
+            }
+          }
+
+          if (gen.path.length < 2) {
+            gen.status = 'idle';
+            gen.path = [];
+            gen.routeInfo = null;
+
+            // Check if this army was marching to war at a settlement!
+            if (gen.battleTargetSite) {
+              const targetSite = gen.battleTargetSite;
+              delete gen.battleTargetSite;
+              // Snap to the exact settlement center of origin (not borders)
+              gen.x = targetSite.x;
+              gen.y = targetSite.y;
+              const elev = getElevationAt(targetSite.x, targetSite.y);
+              const existingG = settlementGarrisonsRef.current.get(targetSite.id) || generateGarrison(targetSite.weight || 5);
+              RomanAudio.playDiscovery();
+              addToast(`🎺 ${gen.name}'s legion arrived at ${targetSite.site} center! Choose battle stance to commence siege.`, 'success');
+              setBattleModal({
+                attacker: { ...gen },
+                defSite: targetSite,
+                defWeight: targetSite.weight || 5,
+                elevation: Math.max(0, elev),
+                existingGarrison: existingG,
+              });
+            }
+          }
+        }
+      }
+
+      // Camera panning via keyboard
       const c = cam.current, k = keys.current;
       const moveSpeed = Math.max(1.8, 16 / c.zoom);
       if (k.w || k.ArrowUp)    c.y += moveSpeed;
@@ -646,7 +1135,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
 
       const dpr = window.devicePixelRatio || 1;
 
-      // 2. Region Hover Lightening & Boundaries Canvas
+      // 2. Boundaries & Region Hover Lightening Canvas
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.save();
@@ -660,7 +1149,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
           ctx.save();
           ctx.translate(c.x, c.y);
           ctx.scale(c.zoom, c.zoom);
-          ctx.fillStyle = 'rgba(255, 215, 0, 0.28)';
+          ctx.fillStyle = 'rgba(255, 215, 0, 0.22)';
           ctx.fill(selPath);
           ctx.strokeStyle = '#ffd700';
           ctx.lineWidth = Math.max(1.2, 2.4 / c.zoom);
@@ -669,7 +1158,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         }
       }
 
-      // Hovered Region Smooth Light-Up
+      // Hovered Region Light-Up
       const activeRegion = hoveredRegionRef.current;
       if (activeRegion && activeRegion.pathD && (!selected || selected.id !== activeRegion.id)) {
         const rPath = getRegionPath(activeRegion.pathD);
@@ -690,42 +1179,89 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       ctx.lineWidth = 3.5;
       ctx.strokeStyle = '#b08a46';
       ctx.strokeRect(c.x, c.y, MAP_WIDTH * c.zoom, MAP_HEIGHT * c.zoom);
+
+      // ── Conquered Territory & Border Rendering ──────────────────────────────
+      const cqMap = conqueredRegionsRef.current;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.scale(c.zoom, c.zoom);
+
+      // 1. Fill conquered provinces with Roman red
+      for (const reg of regionsData.regions) {
+        const isRoman = cqMap.get(reg.id) === 'rome';
+        if (isRoman && reg.pathD) {
+          const rp = getRegionPath(reg.pathD);
+          if (rp) {
+            ctx.fillStyle = 'rgba(200, 24, 24, 0.40)';
+            ctx.fill(rp);
+          }
+        }
+      }
+
+      // 2. Province Borders:
+      // - If both reg and neighbor are Roman: a small subtle internal border line
+      // - Same for others: if both are non-Roman neighbors, normal clean border
+      // - Frontier (Roman vs foreign): bold Roman crimson border
+      for (const reg of regionsData.regions) {
+        if (!reg.pathD) continue;
+        const rp = getRegionPath(reg.pathD);
+        if (!rp) continue;
+        const regIsRoman = cqMap.get(reg.id) === 'rome';
+
+        if (regIsRoman) {
+          // Check if it's an internal Roman province (all neighbors Roman) or frontier
+          const hasForeignNeighbor = (reg.neighbors || []).some(nid => cqMap.get(nid) !== 'rome');
+          if (hasForeignNeighbor) {
+            // Strong frontier border
+            ctx.strokeStyle = 'rgba(220, 35, 35, 0.88)';
+            ctx.lineWidth = Math.max(1.5, 2.5 / c.zoom);
+            ctx.setLineDash([]);
+            ctx.stroke(rp);
+          } else {
+            // Internal Roman shared border: small dashed gold border
+            ctx.strokeStyle = 'rgba(255, 215, 0, 0.45)';
+            ctx.lineWidth = Math.max(0.6, 1.2 / c.zoom);
+            ctx.setLineDash([3 / c.zoom, 3 / c.zoom]);
+            ctx.stroke(rp);
+            ctx.setLineDash([]);
+          }
+        } else if (showBordersRef.current) {
+          // For other settlements: small subtle border with neighbors
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+          ctx.lineWidth = Math.max(0.5, 1.0 / c.zoom);
+          ctx.setLineDash([]);
+          ctx.stroke(rp);
+        }
+      }
+
       ctx.restore();
 
-      // 3. Fog of War / Terra Incognita Canvas
+      ctx.restore();
+
+      // 3. Fog of War Canvas
       const fctx = fogCanvas.getContext('2d');
       fctx.clearRect(0, 0, fogCanvas.width, fogCanvas.height);
 
       if (fogEnabledRef.current) {
         fctx.save();
         fctx.scale(dpr, dpr);
-
-        // Draw opaque dark parchment fog over entire viewport
-        fctx.fillStyle = 'rgba(18, 14, 11, 0.88)';
+        fctx.fillStyle = 'rgba(8, 12, 18, 0.96)';
         fctx.fillRect(0, 0, vw, vh);
 
-        // Punch holes through fog for explored provinces & scout vision spheres
         fctx.globalCompositeOperation = 'destination-out';
         fctx.save();
         fctx.translate(c.x, c.y);
         fctx.scale(c.zoom, c.zoom);
 
-        // A. Punch out discovered province polygons
-        const discSetCurrent = discoveredIdsRef.current;
-        for (const reg of regionsData.regions) {
-          if (discSetCurrent.has(reg.id) && reg.pathD) {
-            const p = getRegionPath(reg.pathD);
-            if (p) {
-              fctx.fillStyle = '#000000';
-              fctx.fill(p);
-            }
-          }
+        const exploredMask = getExploredMask();
+        if (exploredMask) {
+          fctx.drawImage(exploredMask, 0, 0);
         }
 
-        // B. Punch out circular vision spheres around all scouts (without dotted border, pure light/dark)
-        for (const s of scoutsRef.current) {
+        // Real-time smooth vision around each scout
+        for (const scout of currentScouts) {
           fctx.beginPath();
-          fctx.arc(s.x, s.y, s.visionRadiusPx, 0, Math.PI * 2);
+          fctx.arc(scout.x, scout.y, scout.visionRadiusPx, 0, Math.PI * 2);
           fctx.fill();
         }
 
@@ -733,13 +1269,13 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         fctx.restore();
       }
 
-      // 4. Units & March Paths Canvas
+      // 4. Scouts & March Paths Canvas
       const uctx = unitsCanvas.getContext('2d');
       uctx.clearRect(0, 0, unitsCanvas.width, unitsCanvas.height);
       uctx.save();
       uctx.scale(dpr, dpr);
 
-      // Draw march routes for scouts with active paths
+      // Draw march routes for scouts
       for (const scout of scoutsRef.current) {
         if (scout.path && scout.path.length >= 2) {
           const isSelected = scout.id === selectedScoutRef.current;
@@ -759,7 +1295,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
           uctx.stroke();
           uctx.setLineDash([]);
 
-          // Target destination marker flag
+          // Destination marker flag
           const targetPt = scout.path[scout.path.length - 1];
           uctx.beginPath();
           uctx.arc(targetPt.x, targetPt.y, 4.5 / c.zoom, 0, Math.PI * 2);
@@ -776,64 +1312,70 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       // Draw Scout unit tokens
       for (const scout of scoutsRef.current) {
         const sx = c.x + scout.x * c.zoom;
-        const isMarching = scout.status === 'marching';
-        const trotBob = isMarching ? Math.sin(now * 0.018) * 3.5 : 0;
-        const sy = c.y + scout.y * c.zoom + trotBob;
+        const sy = c.y + scout.y * c.zoom;
         const isSelected = scout.id === selectedScoutRef.current;
+        const isMarching = scout.status === 'marching';
 
-        const tokenRadius = 15;
+        let headingAngle = null;
+        if (isMarching && scout.path && scout.path.length >= 2) {
+          const p0 = scout.path[0];
+          const p1 = scout.path[1];
+          headingAngle = Math.atan2(p1.y - p0.y, p1.x - p0.x) + Math.PI / 2;
+        }
 
-        // Selection halo
-        if (isSelected) {
+        drawMapPointer(uctx, sx, sy, isSelected, isMarching, scout, now, headingAngle);
+      }
+
+      // Draw march routes for Generals (dark scarlet dashed lines)
+      for (const gen of generalsRef.current) {
+        if (gen.path && gen.path.length >= 2) {
+          const isSelected = gen.id === selectedGeneralRef.current;
+          uctx.save();
+          uctx.translate(c.x, c.y);
+          uctx.scale(c.zoom, c.zoom);
+
           uctx.beginPath();
-          uctx.arc(sx, sy, tokenRadius + 6, 0, Math.PI * 2);
-          uctx.fillStyle = 'rgba(255, 215, 0, 0.35)';
-          uctx.fill();
-          uctx.strokeStyle = '#ffd700';
-          uctx.lineWidth = 2;
+          uctx.moveTo(gen.x, gen.y);
+          for (let i = 1; i < gen.path.length; i++) {
+            uctx.lineTo(gen.path[i].x, gen.path[i].y);
+          }
+          uctx.strokeStyle = isSelected ? '#ffd700' : '#c0392b';
+          uctx.lineWidth = Math.max(2, 4.0 / c.zoom);
+          uctx.setLineDash([12 / c.zoom, 7 / c.zoom]);
           uctx.stroke();
+          uctx.setLineDash([]);
+
+          // Destination eagle flag marker
+          const targetPt = gen.path[gen.path.length - 1];
+          uctx.font = `${Math.max(10, 14 / c.zoom)}px sans-serif`;
+          uctx.textAlign = 'center';
+          uctx.textBaseline = 'middle';
+          uctx.fillText('🦅', targetPt.x, targetPt.y);
+
+          uctx.restore();
+        }
+      }
+
+      // Draw General vexillum (military banner) tokens
+      for (const gen of generalsRef.current) {
+        const sx = c.x + gen.x * c.zoom;
+        const sy = c.y + gen.y * c.zoom;
+        const isSelected = gen.id === selectedGeneralRef.current;
+        const isMarching = gen.status === 'marching';
+
+        let headingAngle = null;
+        if (isMarching && gen.path && gen.path.length >= 2) {
+          const p0 = gen.path[0];
+          const p1 = gen.path[1];
+          headingAngle = Math.atan2(p1.y - p0.y, p1.x - p0.x) + Math.PI / 2;
         }
 
-        // Unit Token Base
-        uctx.beginPath();
-        uctx.arc(sx, sy, tokenRadius, 0, Math.PI * 2);
-        uctx.fillStyle = '#8a1c14'; // Imperial Roman crimson
-        uctx.fill();
-        uctx.strokeStyle = isSelected ? '#ffffff' : '#d4a34b';
-        uctx.lineWidth = 2.5;
-        uctx.stroke();
-
-        // Cavalry Icon with slight trot rotation
-        uctx.save();
-        uctx.translate(sx, sy);
-        if (isMarching) {
-          uctx.rotate(Math.sin(now * 0.018) * 0.08);
-        }
-        uctx.font = '15px sans-serif';
-        uctx.textAlign = 'center';
-        uctx.textBaseline = 'middle';
-        uctx.fillText('🐎', 0, -1);
-        uctx.restore();
-
-        // Level Star Badge
-        uctx.font = "bold 9px 'Cinzel', serif";
-        uctx.fillStyle = '#ffe18f';
-        uctx.fillText(`★ Lv.${scout.level}`, sx, sy + tokenRadius + 9);
-
-        // Unit Name Label
-        if (isSelected || c.zoom >= 1.2) {
-          uctx.font = "bold 11px 'Cinzel', serif";
-          uctx.strokeStyle = 'rgba(0,0,0,0.9)';
-          uctx.lineWidth = 3;
-          uctx.strokeText(scout.name, sx, sy - tokenRadius - 8);
-          uctx.fillStyle = '#ffffff';
-          uctx.fillText(scout.name, sx, sy - tokenRadius - 8);
-        }
+        drawGeneralBanner(uctx, sx, sy, isSelected, isMarching, gen, now, headingAngle);
       }
 
       uctx.restore();
 
-      // 5. Sites Canvas (Markers + Names gated by Fog of War & Zoom)
+      // 5. Sites Canvas (Markers + Names)
       const sctx = sitesCanvas.getContext('2d');
       sctx.clearRect(0, 0, sitesCanvas.width, sitesCanvas.height);
       sctx.save();
@@ -849,21 +1391,30 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       const isFogOn = fogEnabledRef.current;
 
       for (const site of SITES) {
-        // Fog of War gate: only render site if discovered or fog disabled
         if (isFogOn && !discSitesSet.has(site.id)) continue;
-
         if (c.zoom < site.minZoom) continue;
         if (site.x < frustumX0 || site.x > frustumX1 || site.y < frustumY0 || site.y > frustumY1) continue;
 
         const sx = c.x + site.x * c.zoom;
         const sy = c.y + site.y * c.zoom;
 
+        const cqMap = conqueredRegionsRef.current;
+        const isRomeOwned = cqMap.get(site.id) === 'rome' || site.id === 1;
         const isHovered = activeHoverSite && activeHoverSite.id === site.id;
         const isSelected = selected && selected.id === site.id;
         const baseR = site.weight >= 9 ? 8.5 : site.weight >= 7 ? 7.0 : site.weight >= 5 ? 5.5 : 4.5;
         const r = Math.max(3.5, baseR + (isHovered || isSelected ? 2.5 : 0));
 
-        if (isHovered || isSelected) {
+        // Settlement background disc: Conquered settlements get Roman crimson + gold halo
+        if (isRomeOwned) {
+          sctx.beginPath();
+          sctx.arc(sx, sy, r + 5, 0, Math.PI * 2);
+          sctx.fillStyle = 'rgba(218, 41, 28, 0.65)';
+          sctx.fill();
+          sctx.strokeStyle = '#ffd700';
+          sctx.lineWidth = 1.6;
+          sctx.stroke();
+        } else if (isHovered || isSelected) {
           sctx.beginPath();
           sctx.arc(sx, sy, r + 4, 0, Math.PI * 2);
           sctx.fillStyle = isSelected ? 'rgba(255, 215, 0, 0.55)' : 'rgba(255, 255, 255, 0.45)';
@@ -872,7 +1423,6 @@ export default function CampaignMapViewer({ onExitToMenu }) {
 
         drawMarker(sctx, sx, sy, site.type, r);
 
-        // Site Name Label
         const showLabel = isHovered || isSelected || (c.zoom >= site.minLabelZoom);
         if (showLabel) {
           const fontSize = site.weight >= 9 ? 12 : site.weight >= 7 ? 11 : 10;
@@ -885,35 +1435,95 @@ export default function CampaignMapViewer({ onExitToMenu }) {
 
           sctx.strokeStyle = 'rgba(6, 10, 16, 0.95)';
           sctx.lineWidth = 3.4;
-          sctx.strokeText(site.site, textX, textY);
+          const labelText = (isRomeOwned ? '🦅 ' : '') + site.site;
+          sctx.strokeText(labelText, textX, textY);
 
           sctx.fillStyle = isSelected
             ? '#ffd700'
-            : (isHovered ? '#ffffff' : (site.weight >= 9 ? '#ffe18f' : site.weight >= 7 ? '#f7e3bf' : '#ebd5b7'));
-          sctx.fillText(site.site, textX, textY);
+            : (isRomeOwned
+                ? '#ffb3b3'
+                : (isHovered ? '#ffffff' : (site.weight >= 9 ? '#ffe18f' : site.weight >= 7 ? '#f7e3bf' : '#ebd5b7')));
+          sctx.fillText(labelText, textX, textY);
         }
       }
 
       sctx.restore();
 
-      // 6. Update HUD readout + sync mutated scout positions back to React state
-      if (now - lastHudUpdate > 80) {
-        setHudInfo(prev => ({
-          ...prev,
+      // 6. Minimap render
+      const minimapCanvas = minimapCanvasRef.current;
+      if (minimapCanvas) {
+        const mw = minimapCanvas.width;
+        const mh = minimapCanvas.height;
+        const mctx = minimapCanvas.getContext('2d');
+        mctx.clearRect(0, 0, mw, mh);
+
+        mctx.fillStyle = '#0c1018';
+        mctx.fillRect(0, 0, mw, mh);
+
+        const base = getMinimapBase();
+        if (base) mctx.drawImage(base, 0, 0, mw, mh);
+
+        const exploredMask = exploredMaskRef.current;
+        if (fogEnabledRef.current && exploredMask) {
+          mctx.save();
+          mctx.globalCompositeOperation = 'destination-in';
+          mctx.drawImage(exploredMask, 0, 0, mw, mh);
+          mctx.restore();
+        }
+
+        // Viewport rectangle
+        const vpX = ((-c.x / c.zoom) / MAP_WIDTH) * mw;
+        const vpY = ((-c.y / c.zoom) / MAP_HEIGHT) * mh;
+        const vpW = ((vw / c.zoom) / MAP_WIDTH) * mw;
+        const vpH = ((vh / c.zoom) / MAP_HEIGHT) * mh;
+
+        mctx.strokeStyle = '#ffd700';
+        mctx.lineWidth = 1.5;
+        mctx.strokeRect(vpX, vpY, vpW, vpH);
+
+        // Scout pin on minimap
+        for (const scout of currentScouts) {
+          const mx = (scout.x / MAP_WIDTH) * mw;
+          const my = (scout.y / MAP_HEIGHT) * mh;
+          mctx.fillStyle = '#ff4444';
+          mctx.beginPath();
+          mctx.arc(mx, my, 3.5, 0, Math.PI * 2);
+          mctx.fill();
+        }
+      }
+
+      // Throttle HUD react state updates to ~10 Hz
+      if (now - lastHudUpdate > 100) {
+        setHudInfo({
           zoom: Math.round(c.zoom * 100),
           elevation: hoverRef.current.elevation,
           terrain: hoverRef.current.terrain,
           coord: hoverRef.current.coord,
           territory: hoverRef.current.territory,
           culture: hoverRef.current.culture,
-        }));
-        // Flush animated scout state (position, distance, status) back to React state for UI display
+        });
+
         const refScouts = scoutsRef.current;
         setScouts(prev => prev.map(s => {
           const ref = refScouts.find(r => r.id === s.id);
           if (!ref) return s;
           return {
             ...s,
+            x: ref.x,
+            y: ref.y,
+            distanceTraveledKm: ref.distanceTraveledKm || 0,
+            status: ref.status,
+            path: ref.path,
+          };
+        }));
+
+        // Sync general positions from animation ref to React state
+        const refGenerals = generalsRef.current;
+        setGenerals(prev => prev.map(g => {
+          const ref = refGenerals.find(r => r.id === g.id);
+          if (!ref) return g;
+          return {
+            ...g,
             x: ref.x,
             y: ref.y,
             distanceTraveledKm: ref.distanceTraveledKm || 0,
@@ -931,11 +1541,64 @@ export default function CampaignMapViewer({ onExitToMenu }) {
 
     // Mouse & Touch events
     const onMouseDown = (e) => {
-      // Right click: order march for active scout!
+      // Block map interaction if clicking inside any UI layer
+      if (isInsideUiLayer(e.target)) {
+        drag.current.wasDownOnMap = false;
+        drag.current.isDragging = false;
+        return;
+      }
+
+      // Right click: order selected unit (general or scout) to march
       if (e.button === 2) {
         const c = cam.current;
         const mapX = (e.clientX - c.x) / c.zoom;
         const mapY = (e.clientY - c.y) / c.zoom;
+
+        // If a general is selected, check if right-clicking ON a settlement → Battle!
+        if (selectedGeneralRef.current) {
+          const currentGeneral = generalsRef.current.find(g => g.id === selectedGeneralRef.current);
+          if (currentGeneral) {
+            // Check if right-clicking on a site marker
+            const clickedSiteForBattle = SITES.find(site => {
+              const sx = c.x + site.x * c.zoom;
+              const sy = c.y + site.y * c.zoom;
+              return Math.hypot(e.clientX - sx, e.clientY - sy) <= 30;
+            });
+
+            if (clickedSiteForBattle) {
+              // Show "Go for War" prompt div
+              setWarDeclarationPrompt({
+                general: currentGeneral,
+                site: clickedSiteForBattle,
+                screenX: e.clientX,
+                screenY: e.clientY,
+              });
+              RomanAudio.playClick();
+              return;
+            }
+
+            // Otherwise: order the general's army to march to clicked position
+            const path = calculatePath(currentGeneral.x, currentGeneral.y, mapX, mapY, pathfindingModeRef.current);
+            const route = analyzeRoute(path, currentGeneral.baseSpeedKmPerMin);
+            RomanAudio.playMarch();
+            setGenerals(prev => prev.map(g => {
+              if (g.id !== currentGeneral.id) return g;
+              return { ...g, target: { x: mapX, y: mapY }, path, routeInfo: route, status: 'marching', battleTargetSite: null };
+            }));
+            const gRef = generalsRef.current.find(g => g.id === currentGeneral.id);
+            if (gRef) {
+              gRef.target = { x: mapX, y: mapY };
+              gRef.path = path;
+              gRef.routeInfo = route;
+              gRef.status = 'marching';
+              gRef.battleTargetSite = null;
+            }
+            addToast(`🦅 ${currentGeneral.name} — Legion ordered to march! ${route.distanceKm} km`, 'info');
+            return;
+          }
+        }
+
+        // Otherwise, order the selected scout
         handleOrderMarch(mapX, mapY);
         return;
       }
@@ -943,6 +1606,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       if (e.button !== 0) return;
       drag.current = {
         isDragging: true,
+        wasDownOnMap: true,
         lastX: e.clientX,
         lastY: e.clientY,
         downX: e.clientX,
@@ -952,10 +1616,18 @@ export default function CampaignMapViewer({ onExitToMenu }) {
     };
 
     const onContextMenu = (e) => {
-      e.preventDefault(); // suppress browser context menu for right-click march orders
+      e.preventDefault();
     };
 
     const onMouseMove = (e) => {
+      // Don't hover territories or show site tooltips when pointer is over UI layers
+      if (isInsideUiLayer(e.target)) {
+        hoveredSiteRef.current = null;
+        hoveredRegionRef.current = null;
+        setTooltip(null);
+        return;
+      }
+
       const c = cam.current;
       const mapX = (e.clientX - c.x) / c.zoom;
       const mapY = (e.clientY - c.y) / c.zoom;
@@ -1002,14 +1674,32 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         culture: nearestTerritory ? `${nearestTerritory.region} [${nearestTerritory.macroRegion?.toUpperCase() || ''}]` : null,
       };
 
-      // Check hover on scout units
+      // Check hover on General banner first
       let hoveredUnit = null;
-      for (const scout of scoutsRef.current) {
-        const sx = c.x + scout.x * c.zoom;
-        const sy = c.y + scout.y * c.zoom;
-        if (Math.hypot(e.clientX - sx, e.clientY - sy) <= 18) {
-          hoveredUnit = scout;
+      for (const gen of generalsRef.current) {
+        const gx = c.x + gen.x * c.zoom;
+        const gy = c.y + gen.y * c.zoom;
+        const dx = Math.abs(e.clientX - gx);
+        const dy = e.clientY - gy;
+        // General banner width +-28px, height from top eagle (gy-76px) to base (gy+14px)
+        if (dx <= 28 && dy >= -76 && dy <= 14) {
+          hoveredUnit = { ...gen, isGeneral: true };
           break;
+        }
+      }
+
+      // Check hover on Scout marker
+      if (!hoveredUnit) {
+        for (const scout of scoutsRef.current) {
+          const sx = c.x + scout.x * c.zoom;
+          const sy = c.y + scout.y * c.zoom;
+          const dx = Math.abs(e.clientX - sx);
+          const dy = e.clientY - sy;
+          // Scout pointer width +-22px, height from label/pinhead (sy-54px) to base (sy+14px)
+          if (dx <= 22 && dy >= -54 && dy <= 14) {
+            hoveredUnit = scout;
+            break;
+          }
         }
       }
 
@@ -1046,35 +1736,80 @@ export default function CampaignMapViewer({ onExitToMenu }) {
     };
 
     const onMouseUp = (e) => {
+      const wasDownOnMap = drag.current.wasDownOnMap;
+      drag.current.wasDownOnMap = false;
+      drag.current.isDragging = false;
+      container.style.cursor = 'grab';
+
+      // Block map clicks and prevent deselecting province if releasing inside UI layer or mousedown didn't start on map
+      if (!wasDownOnMap || isInsideUiLayer(e.target)) {
+        return;
+      }
+
       const dist = Math.hypot(e.clientX - drag.current.downX, e.clientY - drag.current.downY);
       if (dist < 6) {
         const c = cam.current;
         const mapX = (e.clientX - c.x) / c.zoom;
         const mapY = (e.clientY - c.y) / c.zoom;
 
-        // Check if clicked directly on a scout token
+        // 1. Check if clicked directly on a General banner
+        for (const gen of generalsRef.current) {
+          const gx = c.x + gen.x * c.zoom;
+          const gy = c.y + gen.y * c.zoom;
+          const dx = Math.abs(e.clientX - gx);
+          const dy = e.clientY - gy;
+          // General banner width +-28px, height from top eagle (gy-76px) to base (gy+14px)
+          if (dx <= 28 && dy >= -76 && dy <= 14) {
+            setSelectedGeneralId(gen.id);
+            selectedGeneralRef.current = gen.id;
+            setSelectedScoutId(null);
+            selectedScoutRef.current = null;
+            setSelectedProvince(null);
+            selectedProvinceRef.current = null;
+            RomanAudio.playClick();
+            return;
+          }
+        }
+
+        // 2. Check if clicked directly on a Scout token
         for (const scout of scoutsRef.current) {
           const sx = c.x + scout.x * c.zoom;
           const sy = c.y + scout.y * c.zoom;
-          if (Math.hypot(e.clientX - sx, e.clientY - sy) <= 18) {
+          const dx = Math.abs(e.clientX - sx);
+          const dy = e.clientY - sy;
+          // Scout pointer width +-22px, height from label/pinhead (sy-54px) to base (sy+14px)
+          if (dx <= 22 && dy >= -54 && dy <= 14) {
             setSelectedScoutId(scout.id);
             selectedScoutRef.current = scout.id;
+            setSelectedGeneralId(null);
+            selectedGeneralRef.current = null;
+            setSelectedProvince(null);
+            selectedProvinceRef.current = null;
             RomanAudio.playClick();
-            drag.current.isDragging = false;
-            container.style.cursor = 'grab';
             return;
           }
         }
 
         // Direct click on a site marker
-        if (hoveredSiteRef.current) {
-          const matchingReg = regionsData.regions.find(r => r.id === hoveredSiteRef.current.id);
+        let clickedSite = hoveredSiteRef.current;
+        if (!clickedSite) {
+          for (const site of SITES) {
+            const sx = c.x + site.x * c.zoom;
+            const sy = c.y + site.y * c.zoom;
+            if (Math.hypot(e.clientX - sx, e.clientY - sy) <= 24) {
+              clickedSite = site;
+              break;
+            }
+          }
+        }
+        if (clickedSite) {
+          const matchingReg = regionsData.regions.find(r => r.id === clickedSite.id || r.site === clickedSite.site);
           if (matchingReg) {
             setSelectedProvince(matchingReg);
             selectedProvinceRef.current = matchingReg;
+            setSelectedGeneralId(null);
+            selectedGeneralRef.current = null;
             RomanAudio.playClick();
-            drag.current.isDragging = false;
-            container.style.cursor = 'grab';
             return;
           }
         }
@@ -1110,19 +1845,21 @@ export default function CampaignMapViewer({ onExitToMenu }) {
           if (clicked) {
             setSelectedProvince(clicked);
             selectedProvinceRef.current = clicked;
+            setSelectedGeneralId(null);
+            selectedGeneralRef.current = null;
             RomanAudio.playClick();
           }
         } else {
           setSelectedProvince(null);
           selectedProvinceRef.current = null;
+          setSelectedGeneralId(null);
+          selectedGeneralRef.current = null;
         }
       }
-
-      drag.current.isDragging = false;
-      container.style.cursor = 'grab';
     };
 
     const onWheel = (e) => {
+      if (isInsideUiLayer(e.target)) return;
       e.preventDefault();
       const c = cam.current;
       const factor = Math.exp(-Math.max(-60, Math.min(60, e.deltaY)) * 0.0016);
@@ -1145,10 +1882,6 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       if (e.key === 'ArrowDown')  keys.current.ArrowDown  = true;
       if (e.key === 'ArrowLeft')  keys.current.ArrowLeft  = true;
       if (e.key === 'ArrowRight') keys.current.ArrowRight = true;
-      if (e.code === 'Space') {
-        e.preventDefault();
-        advanceTurn();
-      }
       if (e.key === 'Escape') {
         setSelectedProvince(null);
         selectedProvinceRef.current = null;
@@ -1185,7 +1918,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [advanceTurn]);
+  }, [addToast, getExploredMask, getMinimapBase, handleOrderMarch, stampScoutVisionToMask]);
 
   const handleReset = () => {
     const vw = window.innerWidth, vh = window.innerHeight;
@@ -1197,13 +1930,14 @@ export default function CampaignMapViewer({ onExitToMenu }) {
 
   const handleFocusPoint = (x, y) => {
     const vw = window.innerWidth, vh = window.innerHeight;
-    const targetZoom = Math.max(cam.current.zoom, 2.2);
+    const targetZoom = Math.max(cam.current.zoom, 2.5);
     cam.current.zoom = targetZoom;
     cam.current.x = vw / 2 - x * targetZoom;
     cam.current.y = vh / 2 - y * targetZoom;
   };
 
   const activeScout = scouts.find(s => s.id === selectedScoutId) || scouts[0];
+  const selectedGeneral = generals.find(g => g.id === selectedGeneralId);
 
   return (
     <div
@@ -1218,153 +1952,10 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         userSelect: 'none',
       }}
     >
-      {/* ── Top Game & Simulation Bar ────────────────────────────────────────── */}
-      <div style={{
-        position: 'absolute',
-        top: 14,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 110,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        background: 'rgba(12, 10, 8, 0.94)',
-        border: '1px solid #8e6c38',
-        borderRadius: 8,
-        padding: '7px 18px',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.85)',
-        backdropFilter: 'blur(10px)',
-        pointerEvents: 'auto',
-      }}>
-        {/* Turn & Month Clock */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span style={{ fontSize: '15px' }}>⏳</span>
-          <span style={{
-            fontSize: '13px', fontWeight: 900, color: '#ffe18f',
-            letterSpacing: '1px', fontFamily: "'Cinzel', serif"
-          }}>
-            MONTH {turn}
-          </span>
-          <span style={{ fontSize: '10px', color: '#ffd700', padding: '2px 7px', background: '#241a10', borderRadius: 4, border: '1px solid #73512a' }}>
-            5s = 1 Month (350 km)
-          </span>
-        </div>
-
-        <span style={{ color: '#685030', fontSize: '14px' }}>|</span>
-
-        {/* Turn Step Button */}
-        <button
-          onClick={() => advanceTurn()}
-          style={{
-            padding: '6px 14px',
-            background: 'linear-gradient(180deg, #b03a2e 0%, #78281f 100%)',
-            border: '1.5px solid #ffd700',
-            borderRadius: 5,
-            color: '#ffffff',
-            fontSize: '11px',
-            fontWeight: 900,
-            cursor: 'pointer',
-            letterSpacing: '1px',
-            fontFamily: "'Cinzel', serif",
-            boxShadow: '0 3px 12px rgba(176,58,46,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-          }}
-          title="Advance 1 Month / 350 km (Shortcut: Spacebar)"
-        >
-          <span>⚔️ ADVANCE 1 MONTH (350 km)</span>
-          <span style={{ fontSize: '9px', opacity: 0.8 }}>(Space)</span>
-        </button>
-
-        {/* Auto March Play/Pause */}
-        <button
-          onClick={() => setIsAutoPlaying(prev => !prev)}
-          style={{
-            padding: '6px 12px',
-            background: isAutoPlaying ? '#27ae60' : '#221810',
-            border: `1px solid ${isAutoPlaying ? '#2ecc71' : '#5a3d1c'}`,
-            borderRadius: 4,
-            color: '#ffffff',
-            fontSize: '11px',
-            fontWeight: 800,
-            cursor: 'pointer',
-            fontFamily: "'Cinzel', serif",
-          }}
-        >
-          {isAutoPlaying ? '⏸️ PAUSE' : '▶ AUTO-MARCH'}
-        </button>
-
-        {/* Auto Speed Selector */}
-        {isAutoPlaying && (
-          <div style={{ display: 'flex', gap: 4 }}>
-            {[1, 2, 5].map(spd => (
-              <button
-                key={spd}
-                onClick={() => setAutoSpeed(spd)}
-                style={{
-                  padding: '3px 7px',
-                  background: autoSpeed === spd ? '#d4a34b' : '#1a120b',
-                  color: autoSpeed === spd ? '#000000' : '#d4a34b',
-                  border: '1px solid #73512a',
-                  borderRadius: 3,
-                  fontSize: '9.5px',
-                  fontWeight: 900,
-                  cursor: 'pointer',
-                }}
-              >
-                {spd}x
-              </button>
-            ))}
-          </div>
-        )}
-
-        <span style={{ color: '#685030', fontSize: '14px' }}>|</span>
-
-        {/* Recruit Scout Quick Action */}
-        <button
-          onClick={() => handleRecruitScout(romeRegion)}
-          style={{
-            padding: '5px 12px',
-            background: 'linear-gradient(180deg, #4d3319 0%, #291809 100%)',
-            border: '1px solid #ffd700',
-            borderRadius: 4,
-            color: '#ffe18f',
-            fontSize: '11px',
-            fontWeight: 800,
-            cursor: 'pointer',
-            fontFamily: "'Cinzel', serif",
-            display: 'flex',
-            alignItems: 'center',
-            gap: 5,
-          }}
-          title="Recruit Scout Equites at Rome (350 km/turn)"
-        >
-          <span>🐎 RECRUIT SCOUT (50 🪙)</span>
-        </button>
-
-        {onExitToMenu && (
-          <button
-            onClick={onExitToMenu}
-            style={{
-              padding: '5px 12px',
-              background: '#1a140e',
-              border: '1px solid #73512a',
-              borderRadius: 4,
-              color: '#d4ad82',
-              fontSize: '11px',
-              fontWeight: 700,
-              cursor: 'pointer',
-              fontFamily: "'Cinzel', serif",
-            }}
-          >
-            ◀ MENU
-          </button>
-        )}
-      </div>
-
-      {/* ── HUD Control Panel ──────────────────────────────────────────────── */}
-      <div style={{
+      {/* ── HUD Control Panel (Top-Left) ──────────────────────────────────── */}
+      <div
+        data-ui-layer="true"
+        style={{
         position: 'absolute', top: 18, left: 18, zIndex: 100,
         background: 'rgba(16, 22, 30, 0.94)', border: '1px solid #7a5c30',
         borderRadius: 8, padding: '12px 16px', backdropFilter: 'blur(8px)',
@@ -1372,11 +1963,31 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         fontFamily: "'Cinzel', serif, Georgia, sans-serif", fontSize: '12px',
         pointerEvents: 'auto', maxWidth: 310,
       }}>
-        <div style={{ fontWeight: 900, fontSize: '14px', color: '#e8c988', letterSpacing: '1.2px', marginBottom: 2 }}>
-          TACTICAL WAR THEATRE
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+          <div style={{ fontWeight: 900, fontSize: '14px', color: '#e8c988', letterSpacing: '1.2px' }}>
+            CAMPAIGN MAP DEBUG
+          </div>
+          {onExitToMenu && (
+            <button
+              onClick={onExitToMenu}
+              style={{
+                padding: '3px 8px',
+                background: '#1a140e',
+                border: '1px solid #73512a',
+                borderRadius: 4,
+                color: '#d4ad82',
+                fontSize: '10px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                fontFamily: "'Cinzel', serif",
+              }}
+            >
+              ◀ MENU
+            </button>
+          )}
         </div>
         <div style={{ fontSize: '10px', color: '#a89474', marginBottom: 10 }}>
-          Sovereign Overstates • Fog of War • 350 km/min Traversal
+          Interactive Map • Scout Reconnaissance • Ancient Settlements
         </div>
 
         {/* Visual Map Mode */}
@@ -1389,8 +2000,8 @@ export default function CampaignMapViewer({ onExitToMenu }) {
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             {[
-              { id: 'vintage', label: '📜 Paper (Colours)' },
-              { id: 'terrain', label: '🏔️ Terrain Elevation' }
+              { id: 'vintage', label: '📜 Paper' },
+              { id: 'terrain', label: '🏔️ Elevation' }
             ].map(m => (
               <button
                 key={m.id}
@@ -1433,9 +2044,9 @@ export default function CampaignMapViewer({ onExitToMenu }) {
                 fontSize: '10px', fontWeight: 800, cursor: 'pointer',
                 fontFamily: "'Cinzel', serif",
               }}
-              title="Chooses shortest path while avoiding high mountains and traversing fast plains"
+              title="Avoids mountains & water"
             >
-              🧠 Smart (Avoid Mtns)
+              🧠 Smart (Terrain)
             </button>
             <button
               onClick={() => {
@@ -1451,14 +2062,14 @@ export default function CampaignMapViewer({ onExitToMenu }) {
                 fontSize: '10px', fontWeight: 800, cursor: 'pointer',
                 fontFamily: "'Cinzel', serif",
               }}
-              title="Direct geometrical line ignoring elevation"
+              title="Direct geometrical line"
             >
               🧭 Direct Line
             </button>
           </div>
         </div>
 
-        {/* Fog of War & Vector Borders Toggles */}
+        {/* Fog of War & Borders Toggles */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
           <button
             onClick={() => {
@@ -1491,15 +2102,15 @@ export default function CampaignMapViewer({ onExitToMenu }) {
               cursor: 'pointer', fontFamily: "'Cinzel', serif",
             }}
           >
-            {showBorders ? '✓ WHITE BORDERS' : 'BORDERS OFF'}
+            {showBorders ? '✓ BORDERS ON' : 'BORDERS OFF'}
           </button>
         </div>
 
         {/* Controls Guide */}
         <div style={{ fontSize: '10.5px', color: '#c4ad8e', lineHeight: 1.5, marginBottom: 8, background: '#120f0c', padding: '6px 8px', borderRadius: 4, border: '1px solid #3d2b19' }}>
-          <div><b style={{ color: '#ffd700' }}>Right-Click:</b> Order Scout to March</div>
-          <div><b style={{ color: '#ffd700' }}>Spacebar:</b> Advance 1 Minute (Turn)</div>
-          <div><b style={{ color: '#ffd700' }}>Speed:</b> 350 km/min (slow in mountains)</div>
+          <div><b style={{ color: '#ffd700' }}>Right-Click:</b> Move Scout</div>
+          <div><b style={{ color: '#ffd700' }}>Left-Click:</b> Select Scout / Settlement</div>
+          <div><b style={{ color: '#ffd700' }}>Drag / WASD:</b> Pan Map</div>
         </div>
 
         {/* Terrain Readout */}
@@ -1549,32 +2160,25 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         </div>
       </div>
 
-      {/* ── Active Scouts / Units Roster Panel ───────────────────────────────── */}
-      <div style={{
+      {/* ── Scouts Roster Panel (Bottom-Left) ─────────────────────────────── */}
+      <div
+        data-ui-layer="true"
+        style={{
         position: 'absolute', bottom: 18, left: 18, zIndex: 100,
-        background: 'rgba(14, 18, 26, 0.94)', border: '1.5px solid #d4a34b',
+        background: 'rgba(14, 18, 26, 0.95)', border: '1.5px solid #d4a34b',
         borderRadius: 8, padding: '12px 14px', backdropFilter: 'blur(8px)',
         color: '#f3e1b9', boxShadow: '0 8px 30px rgba(0,0,0,0.85)',
         fontFamily: "'Cinzel', serif", fontSize: '11px',
-        pointerEvents: 'auto', maxWidth: 360, width: '92vw',
+        pointerEvents: 'auto', maxWidth: 360, width: '90vw',
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <div style={{ fontWeight: 900, fontSize: '12px', color: '#ffd700', letterSpacing: '0.8px' }}>
-            🐎 IMPERIAL RECONNAISSANCE SQUADRONS
+          <div style={{ fontWeight: 800, fontSize: '11px', color: '#ffd700', letterSpacing: '0.5px' }}>
+            🐎 SCOUT RECONNAISSANCE CORPS
           </div>
-          <button
-            onClick={() => handleRecruitScout(selectedProvince || romeRegion)}
-            style={{
-              padding: '3px 8px', backgroundColor: '#4d3319', border: '1px solid #ffd700',
-              borderRadius: 3, color: '#ffffff', fontSize: '9.5px', fontWeight: 800, cursor: 'pointer',
-            }}
-          >
-            + RECRUIT (50 🪙)
-          </button>
+          <span style={{ fontSize: '9.5px', color: '#a08868' }}>{scouts.length} Active</span>
         </div>
 
-        {/* Scouts List */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
           {scouts.map(scout => {
             const isSelected = scout.id === selectedScoutId;
             return (
@@ -1594,77 +2198,140 @@ export default function CampaignMapViewer({ onExitToMenu }) {
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ fontWeight: 800, color: isSelected ? '#ffd700' : '#ffffff' }}>
-                    {scout.name}
+                    🐎 {scout.name}
                   </div>
-                  <div style={{
-                    fontSize: '9.5px', padding: '1px 5px', borderRadius: 3,
-                    backgroundColor: scout.status === 'marching' ? '#145a32' : '#2c1e14',
-                    color: scout.status === 'marching' ? '#2ecc71' : '#d4a34b',
-                    fontWeight: 700,
+                  <span style={{
+                    fontSize: '9px', fontWeight: 800, padding: '1px 5px', borderRadius: 3,
+                    backgroundColor: scout.status === 'marching' ? 'rgba(46,204,113,0.2)' : 'rgba(212,163,75,0.2)',
+                    color: scout.status === 'marching' ? '#2ecc71' : '#ffd700',
                   }}>
-                    {scout.status === 'marching' ? '🏇 MARCHING' : '⛺ IDLE'}
-                  </div>
+                    {scout.status.toUpperCase()}
+                  </span>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, color: '#c4ad8e', fontSize: '10px' }}>
-                  <div>
-                    <b>Speed:</b> 350 km/turn • <b>Vision:</b> {scout.visionRadiusKm} km
-                  </div>
-                  <div>
-                    <b>Traveled:</b> {Math.round(scout.distanceTraveledKm || 0).toLocaleString()} km
-                  </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '9.5px', color: '#c4ad8e' }}>
+                  <span>Speed: 150 km/month</span>
+                  <span>Traveled: {Math.round(scout.distanceTraveledKm || 0)} km</span>
                 </div>
 
                 {scout.routeInfo && (
-                  <div style={{ marginTop: 4, fontSize: '9.5px', color: '#ffd700', borderTop: '1px dashed #5a4220', paddingTop: 3 }}>
-                    Route: {scout.routeInfo.distanceKm} km remaining • ETA: {scout.routeInfo.turnsEta} turns (minutes)
+                  <div style={{ marginTop: 3, fontSize: '9.5px', color: '#ffe18f', borderTop: '1px dashed #5a4220', paddingTop: 2 }}>
+                    Route: {scout.routeInfo.distanceKm} km • ETA: {scout.routeInfo.turnsEta} turns
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <div style={{ display: 'flex', gap: 6, marginTop: 5 }}>
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleLevelUpScout(scout.id);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); handleFocusPoint(scout.x, scout.y); }}
                     style={{
-                      flex: 1, padding: '2px 6px', backgroundColor: '#3d2b19',
-                      border: '1px solid #ffd700', borderRadius: 3,
-                      color: '#ffe18f', fontSize: '9.5px', fontWeight: 800, cursor: 'pointer',
-                    }}
-                    title="Expand scout vision radius by +35 km"
-                  >
-                    ⭐ Promote Lv.{scout.level + 1} (+35km Vision)
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleFocusPoint(scout.x, scout.y);
-                    }}
-                    style={{
-                      padding: '2px 8px', backgroundColor: '#1f2838',
-                      border: '1px solid #5a7090', borderRadius: 3,
-                      color: '#ffffff', fontSize: '9.5px', cursor: 'pointer',
+                      flex: 1, padding: '3px 6px', backgroundColor: '#221a12',
+                      border: '1px solid #73512a', borderRadius: 3,
+                      color: '#d4a34b', fontSize: '9.5px', cursor: 'pointer',
+                      fontFamily: "'Cinzel', serif",
                     }}
                   >
                     🎯 Focus
                   </button>
                 </div>
+
+                {isSelected && (
+                  <div style={{ marginTop: 4, fontSize: '8.5px', color: '#ffe18f', textAlign: 'center', fontStyle: 'italic' }}>
+                    ⚡ Right-click map to order march
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+
+        {generals.length > 0 && (
+          <div style={{ marginTop: 10, borderTop: '1px solid #4a3820', paddingTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <div style={{ fontWeight: 800, fontSize: '11px', color: '#ffd700', letterSpacing: '0.5px' }}>
+                🦅 ROMAN LEGIONS & GENERALS
+              </div>
+              <span style={{ fontSize: '9.5px', color: '#a08868' }}>{generals.length} Raised</span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 150, overflowY: 'auto' }}>
+              {generals.map(gen => {
+                const isSelected = gen.id === selectedGeneralId;
+                const unitCount = (gen.units || []).length;
+                return (
+                  <div
+                    key={gen.id}
+                    onClick={() => {
+                      setSelectedGeneralId(gen.id);
+                      selectedGeneralRef.current = gen.id;
+                      setSelectedScoutId(null);
+                      selectedScoutRef.current = null;
+                      setSelectedProvince(null);
+                      selectedProvinceRef.current = null;
+                      RomanAudio.playClick();
+                    }}
+                    style={{
+                      padding: '7px 10px', borderRadius: 5,
+                      backgroundColor: isSelected ? 'rgba(184, 39, 29, 0.35)' : 'rgba(20, 26, 36, 0.6)',
+                      border: isSelected ? '1.5px solid #ffd700' : '1px solid #732a18',
+                      cursor: 'pointer', transition: 'all 0.15s ease',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ fontWeight: 800, color: isSelected ? '#ffd700' : '#ffffff' }}>
+                        🦅 {gen.name}
+                      </div>
+                      <span style={{
+                        fontSize: '9px', fontWeight: 800, padding: '1px 5px', borderRadius: 3,
+                        backgroundColor: gen.status === 'marching' ? 'rgba(46,204,113,0.2)' : 'rgba(212,163,75,0.2)',
+                        color: gen.status === 'marching' ? '#2ecc71' : '#ffd700',
+                      }}>
+                        {gen.status.toUpperCase()}
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '9.5px', color: '#c4ad8e' }}>
+                      <span>Cohorts: {unitCount}/20 ({unitCount * 1000} men)</span>
+                      <span>Pace: {gen.baseSpeedKmPerMin || 38} km/mo</span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 6, marginTop: 5 }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleFocusPoint(gen.x, gen.y); }}
+                        style={{
+                          flex: 1, padding: '3px 6px', backgroundColor: '#221a12',
+                          border: '1px solid #73512a', borderRadius: 3,
+                          color: '#d4a34b', fontSize: '9.5px', cursor: 'pointer',
+                          fontFamily: "'Cinzel', serif",
+                        }}
+                      >
+                        🎯 Focus Banner
+                      </button>
+                    </div>
+
+                    {isSelected && (
+                      <div style={{ marginTop: 4, fontSize: '8.5px', color: '#ffe18f', textAlign: 'center', fontStyle: 'italic' }}>
+                        ⚡ Right-click map to order march
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* ── Interactive Clicked Province Sovereign Dossier Card ──────────────── */}
+      {/* ── Settlement / Province Dossier (Top-Right) ────────────────────── */}
       {selectedProvince && (
-        <div style={{
+        <div
+          data-ui-layer="true"
+          style={{
           position: 'absolute', top: 18, right: 18, zIndex: 110,
           background: 'rgba(14, 20, 29, 0.96)', border: `2px solid ${selectedProvince.color || '#d4a34b'}`,
           borderRadius: 8, padding: '14px 18px', backdropFilter: 'blur(10px)',
           color: '#f3e1b9', boxShadow: '0 12px 35px rgba(0,0,0,0.9), 0 0 15px rgba(212,163,75,0.25)',
           fontFamily: "'Cinzel', serif, Georgia, sans-serif", fontSize: '12px',
-          maxWidth: 340, width: '90vw', lineHeight: 1.6,
+          maxWidth: 320, width: '90vw', lineHeight: 1.6,
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
             <div>
@@ -1672,7 +2339,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
                 fontSize: '10px', color: selectedProvince.color || '#d4a34b',
                 fontWeight: 800, letterSpacing: '1px', textTransform: 'uppercase'
               }}>
-                SOVEREIGN OVERSTATE • {selectedProvince.macroRegion?.toUpperCase() || 'PROVINCIA'}
+                SETTLEMENT • {selectedProvince.macroRegion?.toUpperCase() || 'PROVINCIA'}
               </div>
               <div style={{ fontSize: '17px', fontWeight: 900, color: '#ffffff', letterSpacing: '0.8px' }}>
                 {selectedProvince.site}
@@ -1697,7 +2364,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
           {/* Sovereign Title & Ruler */}
           <div style={{
             padding: '6px 10px', borderRadius: 4, backgroundColor: '#221a12',
-            border: `1px solid ${selectedProvince.color}66`, fontSize: '11px', color: '#ffe18f',
+            border: `1px solid ${selectedProvince.color || '#553e20'}66`, fontSize: '11px', color: '#ffe18f',
             marginBottom: 10, lineHeight: 1.5,
           }}>
             <div><b>Polity:</b> {selectedProvince.sovereignName || selectedProvince.site}</div>
@@ -1716,19 +2383,58 @@ export default function CampaignMapViewer({ onExitToMenu }) {
 
             <div><b style={{ color: '#d4a34b' }}>Cultural Sphere:</b></div>
             <div style={{ color: '#ffffff' }}>{selectedProvince.region}</div>
-
-            <div><b style={{ color: '#d4a34b' }}>Treasury:</b></div>
-            <div style={{ color: '#ffd700' }}>🪙 {selectedProvince.treasury || 500} Denarii</div>
-
-            <div><b style={{ color: '#d4a34b' }}>Garrison:</b></div>
-            <div style={{ color: '#ffffff' }}>🛡️ {selectedProvince.garrison || 650} Men</div>
           </div>
 
-          {/* Border Neighbors List (A province knows all about states around its borders!) */}
+          {/* Garrison Status */}
+          {(() => {
+            const w = selectedProvince.weight || 1;
+            const g = generateGarrison(w);
+            const swordCount = g.units.filter(u => u.type === 'sword_levis').length;
+            const javelCount = g.units.filter(u => u.type === 'javelins').length;
+            const isConquered = conqueredRegions.get(selectedProvince.id) === 'rome';
+            return (
+              <div style={{ marginBottom: 10, borderTop: '1px solid #3d2b19', paddingTop: 8 }}>
+                <div style={{ fontSize: '10px', color: '#d4a34b', fontWeight: 800, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
+                  🏛️ Garrison Force
+                  {isConquered && <span style={{ marginLeft: 8, color: '#ff4444', fontSize: 9 }}>ROMAN CONTROLLED</span>}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                  {/* Cohort bar */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                      {Array.from({ length: 20 }, (_, i) => (
+                        <div key={i} style={{
+                          width: 10, height: 10, borderRadius: 2,
+                          background: i < g.cohortCount
+                            ? (i < swordCount ? 'rgba(220,60,60,0.9)' : 'rgba(60,120,220,0.9)')
+                            : 'rgba(60,60,60,0.4)',
+                          border: i < g.cohortCount ? '1px solid rgba(255,255,255,0.2)' : '1px solid rgba(60,60,60,0.3)',
+                        }} />
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 9, color: '#a08868', marginTop: 3 }}>
+                      {g.cohortCount}/20 Cohorts ({g.totalMen.toLocaleString()} troops)
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, fontSize: 10 }}>
+                  <div style={{ color: '#e88080' }}>⚔️ Sword Levis ×{swordCount}</div>
+                  <div style={{ color: '#80a8e8' }}>🏹 Javelins ×{javelCount}</div>
+                </div>
+                {selectedGeneralId && !isConquered && (
+                  <div style={{ marginTop: 6, fontSize: 9, color: '#d4a34b', fontStyle: 'italic' }}>
+                    Right-click this settlement with your general selected to assault!
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+
           {selectedProvince.neighbors && selectedProvince.neighbors.length > 0 && (
             <div style={{ marginBottom: 12, borderTop: '1px solid #3d2b19', paddingTop: 6 }}>
               <div style={{ fontSize: '10px', color: '#d4a34b', fontWeight: 800, marginBottom: 4, textTransform: 'uppercase' }}>
-                Borders & Adjacent Overstates ({selectedProvince.neighbors.length}):
+                Adjacent Settlements ({selectedProvince.neighbors.length}):
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 65, overflowY: 'auto' }}>
                 {selectedProvince.neighbors.map(nid => {
@@ -1759,34 +2465,139 @@ export default function CampaignMapViewer({ onExitToMenu }) {
 
           <div style={{ display: 'flex', gap: 6 }}>
             <button
-              onClick={() => handleRecruitScout(selectedProvince)}
-              style={{
-                flex: 1, padding: '6px 8px', backgroundColor: '#4d3319',
-                color: '#ffe18f', border: '1px solid #ffd700', borderRadius: 4,
-                fontSize: '10.5px', fontWeight: 800, cursor: 'pointer',
-                fontFamily: "'Cinzel', serif",
-              }}
-            >
-              🐎 Recruit Scout Here
-            </button>
-            <button
               onClick={() => handleFocusPoint(selectedProvince.center[0], selectedProvince.center[1])}
               style={{
-                padding: '6px 10px', backgroundColor: '#221a12',
+                width: '100%', padding: '6px 10px', backgroundColor: '#221a12',
                 color: '#d4a34b', border: '1px solid #73512a', borderRadius: 4,
-                fontSize: '10.5px', fontWeight: 700, cursor: 'pointer',
+                fontSize: '10px', fontWeight: 700, cursor: 'pointer',
                 fontFamily: "'Cinzel', serif",
               }}
             >
-              🎯 Focus
+              🎯 Focus Settlement
             </button>
           </div>
         </div>
       )}
 
-      {/* ── Active Discovery Toast Notifications ─────────────────────────────── */}
+      {/* ── Army Legion Dossier (Top-Right, Just Like Settlement Dossier) ─── */}
+      {selectedGeneral && (
+        <div
+          data-ui-layer="true"
+          style={{
+            position: 'absolute', top: 18, right: 18, zIndex: 110,
+            background: 'rgba(14, 20, 29, 0.96)', border: '2px solid #ffd700',
+            borderRadius: 8, padding: '14px 18px', backdropFilter: 'blur(10px)',
+            color: '#f3e1b9', boxShadow: '0 12px 35px rgba(0,0,0,0.9), 0 0 18px rgba(255,215,0,0.3)',
+            fontFamily: "'Cinzel', serif, Georgia, sans-serif", fontSize: '12px',
+            maxWidth: 320, width: '90vw', lineHeight: 1.6,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+            <div>
+              <div style={{
+                fontSize: '10px', color: '#ffd700',
+                fontWeight: 800, letterSpacing: '1px', textTransform: 'uppercase'
+              }}>
+                ROMAN LEGION • {selectedGeneral.role || 'LEGATUS LEGIONIS'}
+              </div>
+              <div style={{ fontSize: '17px', fontWeight: 900, color: '#ffffff', letterSpacing: '0.8px' }}>
+                🦅 {selectedGeneral.name}
+              </div>
+            </div>
+            <button
+              onClick={() => { setSelectedGeneralId(null); selectedGeneralRef.current = null; }}
+              style={{
+                background: 'transparent', border: 'none', color: '#a08868',
+                fontSize: '16px', cursor: 'pointer', padding: '0 4px', fontWeight: 700,
+              }}
+              title="Close (Esc)"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div style={{
+            padding: '6px 10px', borderRadius: 4, backgroundColor: '#221a12',
+            border: '1px solid #ffd70066', fontSize: '11px', color: '#ffe18f',
+            marginBottom: 10, lineHeight: 1.5,
+          }}>
+            <div><b>Status:</b> {selectedGeneral.status === 'marching' ? '🏃 Marching across province' : '🛡️ Fortified / Ready'}</div>
+            <div style={{ color: '#d4ad82', fontSize: '10.5px' }}>
+              <b>Origin:</b> {selectedGeneral.provinceName || 'Roma'}
+            </div>
+          </div>
+
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px',
+            fontSize: '11px', color: '#c8b498', borderTop: '1px solid #4a3820',
+            paddingTop: 8, marginBottom: 10,
+          }}>
+            <div><b style={{ color: '#d4a34b' }}>Total Strength:</b></div>
+            <div style={{ color: '#58d68d', fontWeight: 800 }}>
+              {((selectedGeneral.units || []).length * 1000).toLocaleString()} Soldiers
+            </div>
+
+            <div><b style={{ color: '#d4a34b' }}>Active Cohorts:</b></div>
+            <div style={{ color: '#ffffff' }}>{(selectedGeneral.units || []).length} / {selectedGeneral.maxUnits || 20}</div>
+
+            <div><b style={{ color: '#d4a34b' }}>March Pace:</b></div>
+            <div style={{ color: '#ffffff' }}>{selectedGeneral.baseSpeedKmPerMin || 38} km/month</div>
+
+            <div><b style={{ color: '#d4a34b' }}>Distance:</b></div>
+            <div style={{ color: '#ffffff' }}>{Math.round(selectedGeneral.distanceTraveledKm || 0)} km</div>
+          </div>
+
+          {selectedGeneral.routeInfo && (
+            <div style={{ marginBottom: 10, padding: '5px 8px', background: '#1c1510', border: '1px solid #73512a', borderRadius: 4, fontSize: '10.5px', color: '#ffe18f' }}>
+              📍 <b>Route ETA:</b> {selectedGeneral.routeInfo.turnsEta} turns ({selectedGeneral.routeInfo.distanceKm} km)
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={() => handleFocusPoint(selectedGeneral.x, selectedGeneral.y)}
+              style={{
+                width: '100%', padding: '6px 10px', backgroundColor: '#221a12',
+                color: '#d4a34b', border: '1px solid #73512a', borderRadius: 4,
+                fontSize: '10px', fontWeight: 700, cursor: 'pointer',
+                fontFamily: "'Cinzel', serif",
+              }}
+            >
+              🎯 Focus Legion Banner
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Classic Rome: Total War Settlement Options Bar (When General is not Selected) ─── */}
+      {!selectedGeneral && (
+        <RomanSettlementBar
+          province={selectedProvince}
+          onAction={(btn) => {
+            RomanAudio.playClick();
+            addToast(btn.toastMsg || `🏛️ ${btn.label} [Preset Action]`, 'success');
+          }}
+          onHireScout={handleHireScout}
+          onRaiseGeneral={handleRaiseGeneral}
+        />
+      )}
+
+      {/* ── Rome: Total War Army Division Unit Bar (When General Banner is Clicked) ─────── */}
+      {selectedGeneral && (
+        <RomanArmyBar
+          general={selectedGeneral}
+          onRecruitUnit={handleRecruitUnit}
+          onDisbandUnit={handleDisbandUnit}
+          onClose={() => {
+            setSelectedGeneralId(null);
+            selectedGeneralRef.current = null;
+          }}
+        />
+      )}
+
+      {/* ── Toast Notifications ────────────────────────────────────────────── */}
       <div style={{
-        position: 'absolute', bottom: 20, right: 20, zIndex: 120,
+        position: 'absolute', bottom: 220, right: 18, zIndex: 120,
         display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none',
       }}>
         {toasts.map(t => (
@@ -1803,7 +2614,6 @@ export default function CampaignMapViewer({ onExitToMenu }) {
               fontWeight: 800,
               boxShadow: '0 8px 25px rgba(0,0,0,0.85)',
               letterSpacing: '0.5px',
-              animation: 'fadeIn 0.3s ease',
             }}
           >
             {t.msg}
@@ -1811,7 +2621,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         ))}
       </div>
 
-      {/* ── Layer 1: Pure Vector Map (Inline SVG with Colored Vintage Paper) ─── */}
+      {/* ── Layer 1: Vector Map (Inline SVG) ───────────────────────────────── */}
       <div
         ref={svgContainerRef}
         style={{
@@ -1829,7 +2639,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         }}
       />
 
-      {/* ── Layer 3: Fog of War / Terra Incognita Canvas ─────────────────────── */}
+      {/* ── Layer 3: Fog of War Canvas ───────────────────────────────────────── */}
       <canvas
         ref={fogCanvasRef}
         style={{
@@ -1838,7 +2648,7 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         }}
       />
 
-      {/* ── Layer 4: Units, March Paths & Trajectories Canvas ────────────────── */}
+      {/* ── Layer 4: Scouts & March Paths Canvas ─────────────────────────────── */}
       <canvas
         ref={unitsCanvasRef}
         style={{
@@ -1856,10 +2666,75 @@ export default function CampaignMapViewer({ onExitToMenu }) {
         }}
       />
 
+      {/* ── Minimap (Bottom-Right) ───────────────────────────────────────────── */}
+      <canvas
+        ref={minimapCanvasRef}
+        width={236}
+        height={200}
+        onMouseDown={(e) => { minimapDraggingRef.current = true; handleMinimapPan(e.clientX, e.clientY); }}
+        onMouseMove={(e) => { if (minimapDraggingRef.current) handleMinimapPan(e.clientX, e.clientY); }}
+        onMouseUp={() => { minimapDraggingRef.current = false; }}
+        onMouseLeave={() => { minimapDraggingRef.current = false; }}
+        onClick={(e) => handleMinimapPan(e.clientX, e.clientY)}
+        style={{
+          position: 'absolute',
+          bottom: 18,
+          right: 18,
+          width: 236,
+          height: 200,
+          zIndex: 110,
+          borderRadius: 6,
+          boxShadow: '0 8px 28px rgba(0,0,0,0.85), 0 0 0 1.5px #8e6c38',
+          cursor: 'crosshair',
+          imageRendering: 'pixelated',
+        }}
+      />
+
       {/* ── Rich Tooltip ────────────────────────────────────────────────────── */}
       {tooltip && (() => {
         if (tooltip.isUnit) {
           const { unit, screenX, screenY } = tooltip;
+          if (unit.isGeneral) {
+            const unitCount = (unit.units || []).length;
+            return (
+              <div style={{
+                position: 'absolute',
+                left: screenX + 16,
+                top: screenY - 10,
+                zIndex: 200,
+                background: 'rgba(14,19,28,0.97)',
+                border: '1.5px solid #ffd700',
+                borderRadius: 7,
+                padding: '10px 14px',
+                fontFamily: "'Cinzel',serif,Georgia",
+                color: '#f0ddb8',
+                fontSize: '11px',
+                pointerEvents: 'none',
+                boxShadow: '0 6px 28px rgba(0,0,0,0.85)',
+                maxWidth: 275,
+                lineHeight: 1.6,
+              }}>
+                <div style={{ fontWeight: 900, fontSize: '13.5px', color: '#ffd700', marginBottom: 2 }}>
+                  🦅 {unit.name}
+                </div>
+                <div style={{ color: '#e74c3c', fontWeight: 800, fontSize: '10px', textTransform: 'uppercase', marginBottom: 4 }}>
+                  {unit.role || 'Legatus Legionis'} • {unit.status.toUpperCase()}
+                </div>
+                <div><b>Cohorts:</b> {unitCount} / {unit.maxUnits || 20} ({unitCount * 1000} Soldiers)</div>
+                <div><b>Speed:</b> {unit.baseSpeedKmPerMin || 38} km/month (Heavy Legion)</div>
+                <div><b>Traveled:</b> {Math.round(unit.distanceTraveledKm || 0)} km</div>
+                {unit.routeInfo && (
+                  <div style={{ color: '#ffe18f', marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3 }}>
+                    ETA: {unit.routeInfo.turnsEta} turns ({unit.routeInfo.distanceKm} km)
+                  </div>
+                )}
+                <div style={{ color: '#ffd700', marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3, fontSize: '9.5px', fontStyle: 'italic' }}>
+                  Left-click to select & raise units • Right-click to march
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div style={{
               position: 'absolute',
@@ -1884,9 +2759,9 @@ export default function CampaignMapViewer({ onExitToMenu }) {
               <div style={{ color: '#2ecc71', fontWeight: 800, fontSize: '10.5px', marginBottom: 4 }}>
                 Status: {unit.status.toUpperCase()}
               </div>
-              <div><b>Speed:</b> 350 km/turn</div>
+              <div><b>Speed:</b> 150 km/month</div>
               <div><b>Vision Sphere:</b> {unit.visionRadiusKm} km</div>
-              <div><b>Traveled:</b> {unit.distanceTraveledKm} km</div>
+              <div><b>Traveled:</b> {Math.round(unit.distanceTraveledKm || 0)} km</div>
               {unit.routeInfo && (
                 <div style={{ color: '#ffe18f', marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3 }}>
                   ETA: {unit.routeInfo.turnsEta} turns ({unit.routeInfo.distanceKm} km)
@@ -1954,6 +2829,18 @@ export default function CampaignMapViewer({ onExitToMenu }) {
           </div>
         );
       })()}
+
+      {/* Battle Modal */}
+      {battleModal && (
+        <BattleModal
+          attacker={battleModal.attacker}
+          defSite={battleModal.defSite}
+          defWeight={battleModal.defWeight}
+          elevation={battleModal.elevation}
+          onClose={() => setBattleModal(null)}
+          onVictory={handleBattleVictory}
+        />
+      )}
     </div>
   );
 }
