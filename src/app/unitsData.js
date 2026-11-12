@@ -10,6 +10,8 @@
  * cost: Denarii equivalent
  */
 
+import { EXTRA_ROSTER } from './unitsExtra';
+
 export const UNIT_ROSTER = {
   // ─── GAUL ─────────────────────────────────────────────────────────────────
   gaul: {
@@ -1255,6 +1257,8 @@ export const UNIT_ROSTER = {
   },
 };
 
+Object.assign(UNIT_ROSTER, EXTRA_ROSTER);
+
 /** Map from regionsData macroRegion strings → UNIT_ROSTER keys */
 export const MACRO_REGION_MAP = {
   rome:    'rome',
@@ -1273,35 +1277,97 @@ export const MACRO_REGION_MAP = {
   balkans: 'greece',
 };
 
+/**
+ * Finer-grained culture detection. Resolution order:
+ *   1. site overrides  2. the province's `people` text  3. exact region labels
+ *   4. macro-region    5. keyword fallback on the region text.
+ * So a Dacian town inside the "greece" macro-region raises Dacians, not Hoplites.
+ */
+const CULTURE_KEYWORDS = [
+  ['bactria',  ['bactri', 'sogdi', 'yuezhi', 'indo-scyth', 'central asia']],
+  ['steppe',   ['scythi', 'sarmat', 'roxolan', 'alan', 'dyakovo', 'crimean']],
+  ['thrace',   ['dacian', 'thracian', 'getae', 'getic', 'illyri', 'dardani', 'triballi', 'paeonian', 'dassaret', 'serdi', 'odrysian']],
+  ['caucasus', ['colchi', 'iberians (kartli)', 'caucasian alban', 'hyrcani']],
+  ['nubia',    ['kush', 'aksum', "d'mt", 'blemmy', 'meroe']],
+  ['arabia',   ['nabatae', 'arabs', 'himyar', 'sabaean', 'hadramawt', 'qataban', 'lihyan', 'qedar']],
+  ['parthia',  ['parthian', 'characene', 'tylos']],
+  ['pontus',   ['armenia', 'pontic', 'pontus', 'galatia', 'cappadoc', 'bithyn', 'phryg']],
+  ['africa',   ['numidi', 'mauri', 'garaman', 'libyan', 'punic', 'carthag']],
+  ['egypt',    ['egypt', 'ptolem']],
+  ['levant',   ['jud', 'hasmon', 'syria', 'decapolis', 'phoenic']],
+  ['greece',   ['greek', 'macedon', 'boeotian', 'messenian', 'spart']],
+  ['iberia',   ['iber', 'hisp', 'celtiber', 'lusitan', 'balearic']],
+  ['britain',  ['brit', 'hibern']],
+  ['germany',  ['german', 'suebi', 'cimbri']],
+  ['gaul',     ['gaul', 'gall', 'celt']],
+];
+const CULTURE_REGEX = CULTURE_KEYWORDS.map(([c, ws]) => [c, ws.map(w => new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))]);
+
+const REGION_CULTURE = {
+  'thrace, dacia & illyria': 'thrace',
+  'pontic steppe & black sea (scythia/sarmatia)': 'steppe',
+  'caucasus & caspian': 'caucasus',
+  'central asia & eastern fringe': 'bactria',
+  'nubia, red sea & sahara': 'nubia',
+  'arabia & persian gulf': 'arabia',
+  'arabia': 'arabia',
+  'mesopotamia & upper syria': 'parthia',
+  'iran, armenia & caucasus': 'parthia',
+  'levant': 'levant',
+  'levant (extras)': 'levant',
+  'egypt': 'egypt',
+  'egypt (extras)': 'egypt',
+  'black sea': 'pontus',
+  'anatolia & cyprus': 'pontus',
+  'cyrenaica & north africa': 'africa',
+  'north africa (extras)': 'africa',
+  'scandinavia & baltic': 'germany',
+  'danube & central europe': 'germany',
+};
+
+const SITE_CULTURE = {
+  'Sarmizegetusa Regia': 'thrace',
+  'Artaxata': 'pontus',
+  'Tigranocerta': 'pontus',
+  'Armavir': 'pontus',
+  'Alexandria': 'egypt',
+};
+
+function matchKeywords(text) {
+  if (!text) return null;
+  for (const [culture, res] of CULTURE_REGEX) {
+    if (res.some(re => re.test(text))) return culture;
+  }
+  return null;
+}
+
 /** Get the unit culture key for a region object or macroRegion string */
 export function getCultureForRegion(regionOrMacro, optRegionStr = '') {
   let macro = '';
   let regStr = '';
+  let people = '';
+  let site = '';
 
   if (typeof regionOrMacro === 'object' && regionOrMacro !== null) {
     macro = (regionOrMacro.macroRegion || '').toLowerCase();
     regStr = (regionOrMacro.region || '').toLowerCase();
+    people = (regionOrMacro.people || '').toLowerCase();
+    site = regionOrMacro.site || '';
   } else {
     macro = (regionOrMacro || '').toLowerCase();
     regStr = (optRegionStr || '').toLowerCase();
   }
 
+  if (SITE_CULTURE[site]) return SITE_CULTURE[site];
+  if (macro === 'rome' && /italy|alps/.test(regStr)) return 'rome';
+
+  const byPeople = matchKeywords(people);
+  if (byPeople) return byPeople;
+
+  if (REGION_CULTURE[regStr]) return REGION_CULTURE[regStr];
   if (MACRO_REGION_MAP[macro]) return MACRO_REGION_MAP[macro];
 
-  // Fallbacks for "other" or unmapped regions based on geographical text
-  const combined = `${macro} ${regStr}`;
-  if (combined.includes('iran') || combined.includes('mesopotamia') || combined.includes('central asia') || combined.includes('parth')) return 'parthia';
-  if (combined.includes('pont') || combined.includes('armenia') || combined.includes('caucasus') || combined.includes('anatolia') || combined.includes('steppe') || combined.includes('black sea')) return 'pontus';
-  if (combined.includes('africa') || combined.includes('cyren') || combined.includes('carthage') || combined.includes('numid')) return 'africa';
-  if (combined.includes('gree') || combined.includes('balkan') || combined.includes('thrace') || combined.includes('illyr') || combined.includes('macedon')) return 'greece';
-  if (combined.includes('egypt') || combined.includes('nile')) return 'egypt';
-  if (combined.includes('levant') || combined.includes('syria') || combined.includes('jud')) return 'levant';
-  if (combined.includes('iber') || combined.includes('hisp')) return 'iberia';
-  if (combined.includes('gaul') || combined.includes('gall')) return 'gaul';
-  if (combined.includes('germ')) return 'germany';
-  if (combined.includes('brit')) return 'britain';
-
-  return 'rome';
+  return matchKeywords(`${macro} ${regStr}`) || 'rome';
 }
 
 /** Tier display label and color */

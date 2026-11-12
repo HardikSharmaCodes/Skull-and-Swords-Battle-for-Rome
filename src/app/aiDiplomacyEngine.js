@@ -18,6 +18,11 @@
 // FACTION_CONFIG is kept as a DISPLAY/BANNER template for AI generals only.
 // Province ownership is tracked per-province, not per faction group.
 
+import { composeLocalArmy, pickReinforcement, instantiateCohort } from './troopCatalog';
+import { getCultureForRegion } from './unitsData';
+import { computeBattle, generateGarrison, distributeUnequalCasualties } from './BattleModal';
+import { getElevationAt } from './gameEngine';
+
 // ─── Empire Allegiance Resolver ──────────────────────────────────────────────
 // Identifies which custom empire, realm, or sovereign nation a province belongs to.
 export function getEmpireAllegianceName(provinceId, provinceOwners, regions) {
@@ -433,91 +438,53 @@ export const FACTION_NAME_MAP = {
 };
 
 // ─── Provincial Army Factory ──────────────────────────────────────────────────
-// Allows any province across the Mediterranean to raise armies according to need
+// Every province raises troops of ITS OWN people (Dacian falxmen in Dacia, Nabataean
+// camel corps in Arabia, Roman hastati in Italy ...) via troopCatalog / unitsData.
+const CULTURE_BANNER = {
+  rome:     { icon: '🦅', title: s => `Legio ${s}` },
+  gaul:     { icon: '🐗', title: s => `Warband of ${s}` },
+  germany:  { icon: '🐺', title: s => `Heerbann of ${s}` },
+  britain:  { icon: '🔱', title: s => `Tribal Host of ${s}` },
+  iberia:   { icon: '🐂', title: s => `Host of ${s}` },
+  africa:   { icon: '🌙', title: s => `Punic-Numidian Host of ${s}` },
+  egypt:    { icon: '𓅃', title: s => `Royal Host of ${s}` },
+  levant:   { icon: '✡️', title: s => `Levantine Host of ${s}` },
+  parthia:  { icon: '🏹', title: s => `Satrapal Army of ${s}` },
+  pontus:   { icon: '🦁', title: s => `Royal Army of ${s}` },
+  greece:   { icon: '🏛️', title: s => `Phalanx of ${s}` },
+  steppe:   { icon: '🐎', title: s => `Horde of ${s}` },
+  thrace:   { icon: '🪓', title: s => `Hillmen of ${s}` },
+  arabia:   { icon: '🐪', title: s => `Caravan Host of ${s}` },
+  nubia:    { icon: '🏹', title: s => `Kandake's Host of ${s}` },
+  caucasus: { icon: '⛰️', title: s => `Mountain Host of ${s}` },
+  bactria:  { icon: '🐴', title: s => `Silk Road Host of ${s}` },
+};
+
 export function createProvincialArmy(reg, idSuffix = '') {
-  const w = reg.weight || 4;
-  const regionType = reg.macroRegion || 'independent';
+  const culture = getCultureForRegion(reg);
+  const banner = CULTURE_BANNER[culture] || { icon: '⚔️', title: s => `Army of ${s}` };
   const site = reg.site;
+  const cohorts = composeLocalArmy(reg, `${reg.id}-${idSuffix || 'a'}`);
 
-  let title = `Army of ${site}`;
-  let u1Name = 'Provincial Spearmen';
-  let u2Name = 'Skirmishers';
-  let u3Name = 'Swordsmen';
-  let bannerIcon = '⚔️';
-
-  if (regionType === 'rome' || reg.region?.includes('Italy')) {
-    title = `Legio ${site}`;
-    u1Name = `${site} Hastati`;
-    u2Name = `${site} Velites`;
-    u3Name = `${site} Principes`;
-    bannerIcon = '🦅';
-  } else if (regionType === 'gaul' || reg.region?.includes('Gaul')) {
-    title = `Warband of ${site}`;
-    u1Name = 'Celtic Oathsworn';
-    u2Name = 'Gallic Javelins';
-    u3Name = 'Arverni Swords';
-    bannerIcon = '🐗';
-  } else if (regionType === 'iberia' || reg.region?.includes('Iberia')) {
-    title = `Host of ${site}`;
-    u1Name = 'Scutarii Guerrillas';
-    u2Name = 'Cantabrian Javelins';
-    u3Name = 'Celtiberian Caetrati';
-    bannerIcon = '🐂';
-  } else if (regionType === 'germany' || reg.region?.includes('Central Europe')) {
-    title = `Warband of ${site}`;
-    u1Name = 'Suebi Berserkers';
-    u2Name = 'Forest Hunters';
-    u3Name = 'Dacian Falxmen';
-    bannerIcon = '🐺';
-  } else if (regionType === 'greece' || reg.region?.includes('Greece') || reg.region?.includes('Balkans')) {
-    title = `Phalanx of ${site}`;
-    u1Name = 'Hoplite Phalanx';
-    u2Name = 'Cretan Archers';
-    u3Name = 'Macedonian Sarissas';
-    bannerIcon = '🏛️';
-  } else if (regionType === 'carthage' || reg.region?.includes('North Africa') || site === 'Carthage') {
-    title = `Punic Host of ${site}`;
-    u1Name = 'Libyan Spearmen';
-    u2Name = 'Numidian Skirmishers';
-    u3Name = 'Poeni Veterans';
-    bannerIcon = '🌙';
-  } else if (regionType === 'egypt' || reg.region?.includes('Egypt')) {
-    title = `Royal Host of ${site}`;
-    u1Name = 'Machimoi Phalanx';
-    u2Name = 'Archers of the Nile';
-    u3Name = 'Galatian Guard';
-    bannerIcon = '𓅃';
-  } else {
-    title = `Forces of ${site}`;
-    u1Name = 'Border Spearmen';
-    u2Name = 'Archers';
-    u3Name = 'Warrior Cohort';
-    bannerIcon = '👑';
-  }
-
-  const cohorts = [
-    { id: `${reg.id}-u1-${idSuffix}`, name: u1Name, type: 'sword_levis', men: 1000, attack: 32 + w, defense: 30 + w, morale: 75 },
-    { id: `${reg.id}-u2-${idSuffix}`, name: u2Name, type: 'javelins', men: 1000, attack: 36 + w, defense: 20 + w, morale: 70 },
-  ];
-  if (w >= 5) {
-    cohorts.push({ id: `${reg.id}-u3-${idSuffix}`, name: u3Name, type: 'sword_levis', men: 1000, attack: 35 + w, defense: 32 + w, morale: 78 });
-  }
-  if (w >= 7) {
-    cohorts.push({ id: `${reg.id}-u4-${idSuffix}`, name: `${site} Elite Guard`, type: 'sword_levis', men: 1000, attack: 40 + w, defense: 35 + w, morale: 85 });
-  }
+  // Speed = slowest cohort's pace (km/month) scaled to the map's km/min convention.
+  const slowest = cohorts.reduce((m, c) => Math.min(m, c.speedKmPerMonth || 45), 99);
+  const baseSpeed = 30 + Math.round(slowest / 12) + Math.round(Math.random() * 4);
 
   return {
-    id: `prov-army-${reg.id}-${idSuffix || Date.now()}`,
-    name: title,
-    faction: regionType,
+    id: `prov-army-${reg.id}-${idSuffix || Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: banner.title(site),
+    faction: reg.macroRegion || 'independent',
+    culture,
     homeSite: site,
     homeProvinceId: reg.id,
     x: reg.center[0] + (Math.random() - 0.5) * 8,
     y: reg.center[1] + (Math.random() - 0.5) * 8,
     units: cohorts,
+    maxUnits: 14,
     status: 'idle',
-    baseSpeedKmPerMin: 34 + Math.round(Math.random() * 6),
-    bannerIcon,
+    baseSpeedKmPerMin: baseSpeed,
+    bannerIcon: banner.icon,
+    originalMen: cohorts.length * 1000,
   };
 }
 
@@ -536,6 +503,22 @@ export function generateInitialArmies(regions, playerHomeId = 1) {
     170, 171, 172,                    // Egypt: Alexandria, Memphis, Thebes
     188, 189, 191, 192, 196,          // North Africa: Utica, Cirta, Leptis Magna, Carthage, Tingis
   ];
+
+  // Culture strongholds beyond the core list, so every troop culture fields a host from turn 1.
+  const extraSites = [
+    'Ctesiphon', 'Ecbatana', 'Seleucia on the Tigris', 'Nisibis',      // Parthia
+    'Petra', 'Marib', 'Zafar',                                          // Arabia
+    'Meroe', 'Adulis',                                                  // Kush / Aksum
+    'Panticapaeum', 'Scythian Neapolis', 'Tanais',                      // Steppe / Bosporus
+    'Sarmizegetusa Regia', 'Histria', 'Ocnele Mari',                    // Dacia / Thrace
+    'Uplistsikhe', 'Vani', 'Caspian Gates (Derbent)',                   // Caucasus
+    'Bactra', 'Maracanda',                                              // Bactria
+    'Artaxata', 'Tigranocerta', 'Camulodunum', 'Maiden Castle',
+  ];
+  for (const site of extraSites) {
+    const r = regions.find(x => x.site === site);
+    if (r && !initialProvinceIds.includes(r.id)) initialProvinceIds.push(r.id);
+  }
 
   for (const pid of initialProvinceIds) {
     if (pid === playerHomeId) continue;
@@ -597,6 +580,8 @@ export function initializeDiplomacyState(regions) {
     provinceOwners,           // Map<provinceId, controllerId> — self-sovereign at start
     relations,                // province-to-province bilateral relations
     aiGenerals: initialArmies,
+    wars: {},                 // { 'a|b': { a, b, since, clashes } } between ROOT controllers
+    truces: {},               // { 'a|b': untilTurn }
     warDeclarationsLog: [],
   };
 }
@@ -676,6 +661,7 @@ export function tickDiplomacyAndEconomy({
   regions,
   playerLegionUnits,
   onWarDeclared,
+  onPeaceMade,
   onTurnComplete,
 }) {
   if (dt <= 0) return state; // Paused
@@ -714,30 +700,43 @@ export function tickDiplomacyAndEconomy({
     const playerNet = playerInc - playerUpkeep;
     next.treasuries.rome = Math.max(0, (next.treasuries.rome || 0) + playerNet);
 
-    // 3. Process AI Factions Income & Upkeep
-    for (const aiGen of next.aiGenerals) {
-      const fac = aiGen.faction;
-      const homeId = aiGen.homeProvinceId;
-      const cohorts = (aiGen.units || []).length;
-      const upkeep = cohorts * 25;
-      const genIncome = (homeId ? rootIncomes[homeId] : 0) || (rootIncomes[fac] || 500);
-      const net = genIncome - upkeep;
-      next.treasuries[fac] = Math.max(0, (next.treasuries[fac] || 0) + net);
+    // 3. AI income, upkeep, recruitment and recovery — one ledger per ROOT realm
+    //    (so a conquering realm pays for and recruits every army it owns).
+    const regionById = new Map(regions.map(r => [r.id, r]));
+    const armiesByRoot = {};
+    for (const g of next.aiGenerals) {
+      const root = getRootController(g.homeProvinceId || g.faction, next.provinceOwners);
+      (armiesByRoot[root] ||= []).push(g);
+    }
+    for (const [rootKey, armies] of Object.entries(armiesByRoot)) {
+      const root = Number(rootKey);
+      const income = rootIncomes[root] || 0;
+      const cohortTotal = armies.reduce((n, g) => n + (g.units || []).length, 0);
+      const upkeep = cohortTotal * 25;
+      const tKey = `r${root}`;
+      next.treasuries[tKey] = Math.max(0, (next.treasuries[tKey] ?? 600) + income - upkeep);
 
-      // AI Recruitment: If treasury > 1200 and army has room (< 14 cohorts)
-      if (next.treasuries[fac] > 1200 && cohorts < 14) {
-        next.treasuries[fac] -= 450;
-        const newCohortNum = cohorts + 1;
-        const isSword = Math.random() > 0.4;
-        aiGen.units.push({
-          id: `${fac}-recruit-${Date.now()}-${newCohortNum}`,
-          name: isSword ? `${FACTION_CONFIG[fac]?.adjective || ''} Veteran Cohort` : `${FACTION_CONFIG[fac]?.adjective || ''} Skirmishers`,
-          type: isSword ? 'sword_levis' : 'javelins',
-          men: 1000,
-          attack: isSword ? 34 : 36,
-          defense: isSword ? 32 : 20,
-          morale: 75,
-        });
+      for (const g of armies) {
+        const homeReg = regionById.get(g.homeProvinceId);
+        const cohorts = (g.units || []).length;
+
+        // Recovery: an idle army resting inside its own realm regains strength.
+        if (g.status === 'idle' && isInsideOwnRealm(g, regions, next.provinceOwners, root)) {
+          for (const u of g.units) {
+            if ((u.men ?? 1000) < 1000) u.men = Math.min(1000, (u.men ?? 1000) + 120);
+          }
+        }
+
+        // Reinforce: spend treasury on the best-fitting LOCAL troop type the army lacks.
+        const cap = g.maxUnits || 14;
+        if (homeReg && g.status === 'idle' && cohorts < cap && next.treasuries[tKey] > 900) {
+          const tpl = pickReinforcement(homeReg, g.units, next.treasuries[tKey] * 0.4);
+          if (tpl && next.treasuries[tKey] >= tpl.cost + 400) {
+            next.treasuries[tKey] -= tpl.cost;
+            g.units.push(instantiateCohort(tpl, `${g.id}-rec`));
+            g.originalMen = Math.max(g.originalMen || 0, g.units.length * 1000);
+          }
+        }
       }
     }
 
@@ -750,16 +749,17 @@ export function tickDiplomacyAndEconomy({
     }
 
     // Mobilize when needed: province borders a rival realm and has no nearby army
-    if (next.aiGenerals.length < 42) {
+    if (next.aiGenerals.length < 48) {
       for (const reg of regions) {
-        if (next.aiGenerals.length >= 42) break;
+        if (next.aiGenerals.length >= 48) break;
         const myRoot = getRootController(reg.id, next.provinceOwners);
         if (myRoot === 1) continue; // Player manages their own provincial armies
 
-        // Check if province has bordering rival realm
+        // Raise troops when the province borders a realm we're at war with (or, in peace,
+        // occasionally for a lone border province with no army at all)
         const hasRivalBorder = (reg.neighbors || []).some(nid => {
           const nRoot = getRootController(nid, next.provinceOwners);
-          return nRoot !== myRoot;
+          return nRoot !== myRoot && areRootsAtWar(next, myRoot, nRoot);
         });
 
         if (!hasRivalBorder) continue;
@@ -789,8 +789,8 @@ export function tickDiplomacyAndEconomy({
       }
     }
 
-    // 5. 50% War Declaration Check against hated nations
-    checkWarDeclarations(next, onWarDeclared);
+    // 5. Realm-level diplomacy: wars are declared (and ended) between root controllers.
+    runRealmDiplomacy(next, regions, playerLegionUnits, onWarDeclared, onPeaceMade);
 
     if (onTurnComplete) {
       onTurnComplete({
@@ -814,157 +814,351 @@ export function tickDiplomacyAndEconomy({
   return next;
 }
 
-// ─── 50% War Declaration Check ────────────────────────────────────────────────
-// "If a nation hates you, they have a 50% chance of declaring war on the nations they hate (not just the player)."
-function checkWarDeclarations(state, onWarDeclared) {
-  // Opening peace period: Give factions time to govern, recruit, and assemble their armies before declaring wars
-  if (state.turn < 3) return;
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+function getHomeRootProvince(g, provinceOwners) {
+  return getRootController(g.homeProvinceId || g.faction, provinceOwners);
+}
 
-  const fKeys = Object.keys(FACTION_CONFIG);
+function isInsideOwnRealm(g, regions, provinceOwners, rootId) {
+  let best = null, bd = Infinity;
+  for (const r of regions) {
+    const d = Math.hypot(g.x - r.center[0], g.y - r.center[1]);
+    if (d < bd) { bd = d; best = r; }
+  }
+  return !!best && bd < 70 && getRootController(best.id, provinceOwners) === rootId;
+}
 
-  for (const f1 of fKeys) {
-    if (f1 === 'independent') continue; // Minor realms don't launch offensive declarations
+const warKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 
-    for (const f2 of fKeys) {
-      if (f1 === f2) continue;
-      const rel = state.relations[f1]?.[f2];
-      if (!rel || !rel.areNeighbors || rel.atWar) continue;
+export function areRootsAtWar(state, a, b) {
+  if (a === b) return false;
+  return !!state.wars?.[warKey(a, b)];
+}
 
-      const score = calculateOpinionScore(f1, f2, rel, state.gameTimeSec, state.relations);
-
-      // If a nation hates another nation (score <= -40 / Hostile)
-      if (score <= -40) {
-        // 50% chance of declaring war!
-        if (Math.random() < 0.50) {
-          rel.atWar = true;
-          if (state.relations[f2]?.[f1]) {
-            state.relations[f2][f1].atWar = true;
-          }
-
-          const fac1 = FACTION_CONFIG[f1];
-          const fac2 = FACTION_CONFIG[f2];
-          const announcement = `⚔️ WAR DECLARED! ${fac1.name} has declared war upon ${fac2.name}!`;
-
-          state.warDeclarationsLog.push({
-            turn: state.turn,
-            aggressor: f1,
-            target: f2,
-            text: announcement,
-            timestamp: Date.now(),
-          });
-
-          if (onWarDeclared) {
-            onWarDeclared({ aggressor: fac1, target: fac2, announcement });
-          }
+function setRelationsWar(state, regions, rootA, rootB, flag) {
+  for (const r of regions) {
+    const rr = getRootController(r.id, state.provinceOwners);
+    if (rr !== rootA && rr !== rootB) continue;
+    for (const nid of (r.neighbors || [])) {
+      const nr = getRootController(nid, state.provinceOwners);
+      if ((rr === rootA && nr === rootB) || (rr === rootB && nr === rootA)) {
+        const rel = state.relations?.[r.id]?.[nid];
+        if (rel) {
+          rel.atWar = flag;
+          if (flag) rel.pastWars = Math.min(rel.pastWars || 0, -20);
         }
       }
     }
   }
 }
 
-// ─── AI Military Target Selection & Behavior ──────────────────────────────────
-// "the enemy units should be doing war against their borders"
-// AI provincial hosts actively evaluate adjacent borders (neighboring provinces)
-// of different rulers/empires and wage border warfare against rival frontiers.
+/** Public: declare war between two realms (used by AI and by the player's own attacks). */
+export function declareWar(state, regions, rootA, rootB) {
+  if (rootA === rootB || areRootsAtWar(state, rootA, rootB)) return false;
+  if (!state.wars) state.wars = {};
+  state.wars[warKey(rootA, rootB)] = { a: rootA, b: rootB, since: state.turn, clashes: 0 };
+  setRelationsWar(state, regions, rootA, rootB, true);
+  return true;
+}
+
+export function noteClash(state, a, b) {
+  const w = state.wars?.[warKey(a, b)];
+  if (w) w.clashes = (w.clashes || 0) + 1;
+}
+
+export function makePeace(state, regions, rootA, rootB, truceTurns = 6) {
+  if (!state.wars) return;
+  delete state.wars[warKey(rootA, rootB)];
+  if (!state.truces) state.truces = {};
+  state.truces[warKey(rootA, rootB)] = state.turn + truceTurns;
+  setRelationsWar(state, regions, rootA, rootB, false);
+}
+
+function realmName(rootId, regions) {
+  const r = regions.find(x => x.id === rootId);
+  return r ? r.site : `Realm ${rootId}`;
+}
+
+function realmStrength(rootId, state, regions, playerArmyUnits) {
+  let men = 0;
+  let weight = 0;
+  for (const g of state.aiGenerals) {
+    if (getHomeRootProvince(g, state.provinceOwners) === rootId) {
+      men += (g.units || []).reduce((s, u) => s + Math.max(0, u.men ?? 1000), 0);
+    }
+  }
+  if (rootId === 1 && playerArmyUnits) {
+    men += playerArmyUnits.reduce((s, u) => s + Math.max(0, u.men ?? 1000), 0);
+  }
+  for (const r of regions) {
+    if (getRootController(r.id, state.provinceOwners) === rootId) weight += r.weight || 4;
+  }
+  return men + weight * 350;
+}
+
+// ─── Realm-level diplomacy: war & peace between root controllers ──────────────
+// Wars are declared by ambitious realms against bordering rivals they can beat,
+// last a few turns, and end in a truce once both sides are tired or one is broken.
+function runRealmDiplomacy(state, regions, playerArmyUnits, onWarDeclared, onPeaceMade) {
+  if (!state.wars) state.wars = {};
+  if (!state.truces) state.truces = {};
+  const turn = state.turn;
+
+  // Border graph between roots
+  const borders = new Map(); // root -> Set(root)
+  for (const r of regions) {
+    const a = getRootController(r.id, state.provinceOwners);
+    for (const nid of (r.neighbors || [])) {
+      const b = getRootController(nid, state.provinceOwners);
+      if (a !== b) {
+        if (!borders.has(a)) borders.set(a, new Set());
+        borders.get(a).add(b);
+      }
+    }
+  }
+
+  // 1. Peace: tired, broken, or dissolved realms.
+  for (const [key, war] of Object.entries(state.wars)) {
+    const { a, b } = war;
+    const age = turn - war.since;
+    const aAlive = getRootController(a, state.provinceOwners) === a;
+    const bAlive = getRootController(b, state.provinceOwners) === b;
+    const sA = realmStrength(a, state, regions, playerArmyUnits);
+    const sB = realmStrength(b, state, regions, playerArmyUnits);
+    const lopsided = Math.max(sA, sB) / Math.max(1, Math.min(sA, sB)) > 2.2;
+    let peaceChance = 0;
+    if (!aAlive || !bAlive || !(borders.get(a)?.has(b))) peaceChance = 1;      // no longer neighbours / dissolved
+    else if (age >= 3) peaceChance = Math.min(0.55, 0.10 + (age - 3) * 0.06 + (war.clashes === 0 ? 0.15 : 0));
+    if (lopsided && age >= 4) peaceChance *= 0.5; // the stronger side presses on
+    if (Math.random() < peaceChance) {
+      makePeace(state, regions, a, b, 5 + Math.floor(Math.random() * 4));
+      onPeaceMade?.({ a, b, aName: realmName(a, regions), bName: realmName(b, regions), involvesPlayer: a === 1 || b === 1 });
+    }
+  }
+
+  // 2. Opening peace period.
+  if (turn < 3) return;
+
+  // 3. Declarations — at most one per turn, so the map doesn't explode into war at once.
+  const wars = Object.values(state.wars);
+  const warCount = root => wars.filter(w => w.a === root || w.b === root).length;
+  const candidates = [];
+  const armedRoots = new Set(state.aiGenerals.map(g => getHomeRootProvince(g, state.provinceOwners)));
+
+  for (const root of armedRoots) {
+    if (root === 1) continue; // player decides their own wars
+    if (warCount(root) >= 2) continue;
+    const sMe = realmStrength(root, state, regions, playerArmyUnits);
+    for (const other of (borders.get(root) || [])) {
+      if (areRootsAtWar(state, root, other)) continue;
+      if ((state.truces[warKey(root, other)] || 0) > turn) continue;
+      if (warCount(other) >= 3) continue; // don't pile on one victim
+      const sThem = realmStrength(other, state, regions, playerArmyUnits);
+      const ratio = sMe / Math.max(1, sThem);
+      if (ratio < 0.85) continue;
+      // Grievance: lingering past-war bitterness toward this neighbour
+      let grievance = 0;
+      for (const r of regions) {
+        if (getRootController(r.id, state.provinceOwners) !== root) continue;
+        for (const nid of (r.neighbors || [])) {
+          if (getRootController(nid, state.provinceOwners) === other) {
+            grievance += -(state.relations?.[r.id]?.[nid]?.pastWars || 0) / 100;
+          }
+        }
+      }
+      const chance = Math.min(0.30, 0.03 + 0.07 * (ratio - 0.85) + grievance * 0.05 + (other === 1 ? 0.01 : 0));
+      candidates.push({ root, other, chance });
+    }
+  }
+  candidates.sort((x, y) => y.chance - x.chance);
+  for (const c of candidates) {
+    if (Math.random() < c.chance) {
+      if (declareWar(state, regions, c.root, c.other)) {
+        const aggressor = { name: realmName(c.root, regions), shortName: realmName(c.root, regions) };
+        const target = { name: realmName(c.other, regions), shortName: realmName(c.other, regions) };
+        const announcement = `⚔️ WAR DECLARED! ${aggressor.name} has declared war upon ${target.name}!`;
+        state.warDeclarationsLog.push({ turn, aggressor: c.root, target: c.other, text: announcement, timestamp: Date.now() });
+        onWarDeclared?.({ aggressor, target, announcement, involvesPlayer: c.other === 1 });
+      }
+      break;
+    }
+  }
+}
+
+// ─── AI field logic ────────────────────────────────────────────────────────────
+function armyMen(g) {
+  return (g.units || []).reduce((s, u) => s + Math.max(0, u.men ?? 1000), 0);
+}
+
+/** Win chance (0-1) for an army assaulting a province, using the real battle formula. */
+export function estimateAssaultChance(gen, reg, settlementGarrisons) {
+  const garr = settlementGarrisons?.get?.(reg.id) || generateGarrison(reg.weight || 4);
+  const elev = Math.max(0, getElevationAt(reg.center[0], reg.center[1]));
+  const res = computeBattle(gen, reg, reg.weight || 4, elev, 'balanced', garr);
+  return res.atkWinChance / 100;
+}
+
+/**
+ * Apply the aftermath of an AI assault to both sides and return the result.
+ * Attackers always bleed; a failed assault can break the army.
+ */
+export function resolveAiAssault(gen, reg, settlementGarrisons) {
+  const garr = settlementGarrisons?.get?.(reg.id) || generateGarrison(reg.weight || 4);
+  const elev = Math.max(0, getElevationAt(reg.center[0], reg.center[1]));
+  const calc = computeBattle(gen, reg, reg.weight || 4, elev, 'balanced', garr);
+  const chance = calc.atkWinChance / 100;
+  const atkWins = Math.random() < chance;
+
+  const atkMen = calc.atkMen, defMen = calc.defMen;
+  const atkLossPct = atkWins ? 0.10 + (1 - chance) * 0.25 : 0.35 + Math.random() * 0.25;
+  const defLossPct = atkWins ? 0.55 + Math.random() * 0.3 : 0.12 + chance * 0.25;
+  const atkCas = distributeUnequalCasualties(gen.units || [], Math.round(atkMen * atkLossPct), 'balanced');
+  const defCas = distributeUnequalCasualties(garr.units || [], Math.round(defMen * defLossPct), 'balanced');
+
+  const survivingAtk = (atkCas.updatedUnits || []).filter(u => (u.men ?? 1000) >= 80);
+  const survivingDef = (defCas.updatedUnits || []).filter(u => (u.men ?? 1000) >= 80);
+  const newGarrison = {
+    cohortCount: survivingDef.length,
+    units: survivingDef,
+    totalMen: survivingDef.reduce((s, u) => s + (u.men ?? 1000), 0),
+  };
+  return { atkWins, chance, survivingAtk, newGarrison };
+}
+
+// ─── AI Military Target Selection & Behaviour ──────────────────────────────────
+// Armies now (1) only fight realms they are AT WAR with, (2) rush to defend a
+// threatened province of their realm, (3) pick the best-value assault using the
+// real battle model, (4) never pile on the same target, (5) fall back and rest
+// when mauled, (6) otherwise station on the frontier facing their enemy.
 export function evaluateAiMilitaryDecisions({
   state,
   regions,
   settlementGarrisons,
   playerLegion,
+  playerGenerals,
   onAiMarchOrder,
 }) {
   const { aiGenerals, provinceOwners } = state;
+  const regionById = new Map(regions.map(r => [r.id, r]));
+  const playerArmies = playerGenerals || (playerLegion ? [playerLegion] : []);
+
+  // Provinces another army of the same realm is already marching on
+  const claimed = new Set();
+  for (const g of aiGenerals) {
+    if ((g.status === 'marching') && g.targetSettlement) claimed.add(g.targetSettlement.id);
+  }
+
+  const dist = (x1, y1, x2, y2) => Math.hypot(x1 - x2, y1 - y2);
 
   for (const gen of aiGenerals) {
-    if (gen.status === 'marching' || gen.status === 'retreating') continue; // Already executing an order
+    if (gen.status === 'marching' || gen.status === 'retreating') continue;
+    if ((gen.units || []).length === 0) continue;
 
-    const armyRootId = getRootController(gen.homeProvinceId || gen.faction, provinceOwners);
-    const genTotalMen = (gen.units || []).reduce((s, u) => s + (u.men || 1000), 0);
-
-    // 1. Identify which province this army is currently located in or near
-    let currentReg = null;
-    let minD = Infinity;
-    for (const reg of regions) {
-      const d = Math.hypot(gen.x - reg.center[0], gen.y - reg.center[1]);
-      if (d < minD) {
-        minD = d;
-        currentReg = reg;
-      }
-    }
-    if (!currentReg) continue;
-
-    // 2. Identify immediate bordering rival provinces (frontier targets)
-    const neighborIds = (currentReg.neighbors || []).map(Number);
-    const rivalBorderTargets = [];
-
-    for (const nid of neighborIds) {
-      const neighborRoot = getRootController(nid, provinceOwners);
-      if (neighborRoot !== armyRootId) {
-        const borderReg = regions.find(r => r.id === nid);
-        if (borderReg) {
-          const garrData = settlementGarrisons?.get?.(nid) || { totalMen: (borderReg.weight || 4) * 1000 };
-          const garrMen = Math.max(1, garrData.totalMen || 1000);
-          const dist = Math.hypot(gen.x - borderReg.center[0], gen.y - borderReg.center[1]);
-
-          // Score: prioritize weaker garrisons and closer immediate border proximity
-          const score = (5000 / garrMen) * 1.5 + (800 / Math.max(30, dist));
-          rivalBorderTargets.push({
-            region: borderReg,
-            garrMen,
-            dist,
-            score,
-          });
-        }
-      }
+    const myRoot = getHomeRootProvince(gen, provinceOwners);
+    const men = armyMen(gen);
+    const original = gen.originalMen || (gen.units.length * 1000);
+    const strengthFrac = men / Math.max(1, original);
+    const enemyRoots = new Set();
+    for (const key of Object.keys(state.wars || {})) {
+      const w = state.wars[key];
+      if (w.a === myRoot) enemyRoots.add(w.b);
+      else if (w.b === myRoot) enemyRoots.add(w.a);
     }
 
-    if (rivalBorderTargets.length > 0) {
-      // ── Border skirmish / frontier invasion across the border! ──
-      rivalBorderTargets.sort((a, b) => b.score - a.score);
-      const bestTarget = rivalBorderTargets[0];
-      const targetDefensePower = bestTarget.garrMen * 1.1;
-      const powerRatio = genTotalMen / Math.max(1, targetDefensePower);
+    const ownRegions = regions.filter(r => getRootController(r.id, provinceOwners) === myRoot);
 
-      // Attack if army has a fighting chance across the border (powerRatio >= 0.82 or chance assault)
-      if (powerRatio >= 0.82 || Math.random() < 0.25) {
-        if (onAiMarchOrder) {
-          onAiMarchOrder({
-            general: gen,
-            action: 'attack',
-            targetRegion: bestTarget.region,
-            powerRatio,
-          });
-        }
+    // ── A. Mauled? Fall back to the nearest own province and rest. ──
+    if (strengthFrac < 0.45 && ownRegions.length > 0) {
+      const home = ownRegions.reduce((best, r) =>
+        dist(gen.x, gen.y, r.center[0], r.center[1]) < dist(gen.x, gen.y, best.center[0], best.center[1]) ? r : best, ownRegions[0]);
+      if (dist(gen.x, gen.y, home.center[0], home.center[1]) > 30) {
+        onAiMarchOrder?.({ general: gen, action: 'retreat', targetRegion: home, powerRatio: strengthFrac, reason: 'mauled' });
       }
       continue;
     }
 
-    // 3. If no immediate rival neighbors (army is inland / deep inside realm):
-    // March to the nearest frontier province belonging to this realm that DOES border a rival
-    const friendlyRegions = regions.filter(r => getRootController(r.id, provinceOwners) === armyRootId);
-    const frontierStrongholds = friendlyRegions.filter(r => {
-      return (r.neighbors || []).some(nid => getRootController(nid, provinceOwners) !== armyRootId);
-    });
+    if (enemyRoots.size === 0) {
+      // ── Peace: garrison the largest province of the realm nearby (spread armies out). ──
+      continue;
+    }
 
-    if (frontierStrongholds.length > 0) {
-      frontierStrongholds.sort((a, b) => {
-        const da = Math.hypot(gen.x - a.center[0], gen.y - a.center[1]);
-        const db = Math.hypot(gen.x - b.center[0], gen.y - b.center[1]);
-        return da - db;
-      });
-      const frontierBase = frontierStrongholds[0];
-      const distToBase = Math.hypot(gen.x - frontierBase.center[0], gen.y - frontierBase.center[1]);
-
-      // Only march if not already stationed at this frontier
-      if (distToBase > 45) {
-        if (onAiMarchOrder) {
-          onAiMarchOrder({
-            general: gen,
-            action: 'retreat', // repositioning to border frontier
-            targetRegion: frontierBase,
-            powerRatio: 1.0,
-          });
+    // ── B. Defend: an enemy force is bearing down on one of our provinces ──
+    let threatened = null;
+    let threatScore = 0;
+    for (const reg of ownRegions) {
+      const dHere = dist(gen.x, gen.y, reg.center[0], reg.center[1]);
+      if (dHere > 420) continue;
+      for (const other of aiGenerals) {
+        if (other === gen) continue;
+        const oRoot = getHomeRootProvince(other, provinceOwners);
+        if (!enemyRoots.has(oRoot)) continue;
+        const dEnemy = dist(other.x, other.y, reg.center[0], reg.center[1]);
+        if (dEnemy < 160) {
+          const sc = (reg.weight || 4) * 10 - dHere / 20;
+          if (sc > threatScore) { threatScore = sc; threatened = { reg, enemy: other }; }
         }
+      }
+      if (enemyRoots.has(1)) {
+        for (const pg of playerArmies) {
+          if (dist(pg.x, pg.y, reg.center[0], reg.center[1]) < 160) {
+            const sc = (reg.weight || 4) * 10 - dHere / 20;
+            if (sc > threatScore) { threatScore = sc; threatened = { reg, enemy: pg }; }
+          }
+        }
+      }
+    }
+    if (threatened) {
+      const d = dist(gen.x, gen.y, threatened.reg.center[0], threatened.reg.center[1]);
+      if (d > 35) {
+        onAiMarchOrder?.({ general: gen, action: 'retreat', targetRegion: threatened.reg, powerRatio: 1, reason: 'defend' });
+        continue;
+      }
+      // Already in position: stand and fight (field combat triggers on contact).
+      continue;
+    }
+
+    // ── C. Offence: find enemy provinces bordering our realm that we can take ──
+    const targets = [];
+    const seen = new Set();
+    for (const own of ownRegions) {
+      if (dist(gen.x, gen.y, own.center[0], own.center[1]) > 520) continue; // too far to be relevant
+      for (const nid of (own.neighbors || [])) {
+        if (seen.has(nid)) continue;
+        const nroot = getRootController(nid, provinceOwners);
+        if (!enemyRoots.has(nroot)) continue;
+        seen.add(nid);
+        const reg = regionById.get(nid);
+        if (!reg || claimed.has(nid)) continue;
+        const d = dist(gen.x, gen.y, reg.center[0], reg.center[1]);
+        const chance = estimateAssaultChance(gen, reg, settlementGarrisons);
+        // Value: win chance dominates, then prize (weight), then proximity.
+        const score = chance * 100 + (reg.weight || 4) * 3 - d / 25;
+        targets.push({ reg, chance, d, score });
+      }
+    }
+
+    // Only attack when the odds are genuinely good; a bigger prize tolerates slightly worse odds.
+    const viable = targets
+      .filter(t => t.chance >= 0.58 - Math.min(0.06, (t.reg.weight || 4) * 0.006))
+      .sort((a, b) => b.score - a.score);
+    if (viable.length > 0) {
+      const best = viable[0];
+      claimed.add(best.reg.id);
+      onAiMarchOrder?.({ general: gen, action: 'attack', targetRegion: best.reg, powerRatio: best.chance / Math.max(0.01, 1 - best.chance) });
+      continue;
+    }
+
+    // ── D. No good attack: take position at the frontier province facing the enemy ──
+    const frontier = ownRegions.filter(r => (r.neighbors || []).some(n => enemyRoots.has(getRootController(n, provinceOwners))));
+    if (frontier.length > 0) {
+      // Prefer a frontier province with no friendly army already standing there.
+      const occupied = reg => aiGenerals.some(o => o !== gen && getHomeRootProvince(o, provinceOwners) === myRoot && dist(o.x, o.y, reg.center[0], reg.center[1]) < 60);
+      const free = frontier.filter(r => !occupied(r));
+      const pool = free.length ? free : frontier;
+      const base = pool.reduce((best, r) =>
+        dist(gen.x, gen.y, r.center[0], r.center[1]) < dist(gen.x, gen.y, best.center[0], best.center[1]) ? r : best, pool[0]);
+      if (dist(gen.x, gen.y, base.center[0], base.center[1]) > 45) {
+        onAiMarchOrder?.({ general: gen, action: 'retreat', targetRegion: base, powerRatio: 1, reason: 'frontier' });
       }
     }
   }

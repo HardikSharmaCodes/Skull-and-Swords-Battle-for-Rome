@@ -2,6 +2,8 @@
 
 import React, { useState } from 'react';
 import { RomanAudio } from './gameEngine';
+import { TIER_STYLE } from './unitsData';
+import { instantiateCohort } from './troopCatalog';
 
 // ─── Unit Classes Definition ────────────────────────────────────────────────
 export const UNIT_CLASSES = {
@@ -247,7 +249,7 @@ function UnitSlotCard({
         userSelect: 'none',
         overflow: 'hidden',
       }}
-      title={`${unit.name} (${classMeta.label}) • ${(unit.men || 1000).toLocaleString()} Roman Troops`}
+      title={`${unit.name} (${classMeta.label}${unit.tier ? ' · ' + (TIER_STYLE[unit.tier]?.label || '') : ''}) • ${(unit.men ?? 1000).toLocaleString()} troops • ATK ${unit.attack} DEF ${unit.defense} MOR ${unit.morale}`}
     >
       {/* Top Diamond Badge with Weapon Icon & Chevrons */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '0 2px', zIndex: 2 }}>
@@ -286,7 +288,16 @@ function UnitSlotCard({
 
       {/* Center Unit Card Illustration */}
       <div style={{ margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <UnitCardArt typeId={unit.typeId} unitClass={unit.unitClass} isGeneral={isGeneralUnit} />
+        {(!isGeneralUnit && unit.icon && unit.typeId !== 'sword_levis' && unit.typeId !== 'javelins')
+          ? (
+            <div style={{ width: 38, height: 56, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(180deg,#d9cfbe 0%,#9a8c76 100%)' }}>
+              <span style={{ fontSize: 24, lineHeight: 1 }}>{unit.icon}</span>
+              <span style={{ fontSize: 6.5, fontWeight: 900, color: (TIER_STYLE[unit.tier] || TIER_STYLE.M).color, background: '#1a120a', padding: '0 3px', borderRadius: 2, marginTop: 3 }}>
+                {(TIER_STYLE[unit.tier] || TIER_STYLE.M).label.slice(0, 5)}
+              </span>
+            </div>
+          )
+          : <UnitCardArt typeId={unit.typeId} unitClass={unit.unitClass} isGeneral={isGeneralUnit} />}
       </div>
 
       {/* Troop Strength Number Pill */}
@@ -403,15 +414,127 @@ function RomanMedallion({ icon, label, onClick }) {
   );
 }
 
+// ─── Drawer tab pill ─────────────────────────────────────────────────────────
+function DrawerTab({ active, onClick, children }) {
+  return (
+    <button
+      data-ui-layer="true"
+      onClick={() => { RomanAudio.playClick(); onClick(); }}
+      style={{
+        padding: '5px 14px', fontSize: '11px', fontWeight: 900, cursor: 'pointer', borderRadius: 5,
+        fontFamily: "'Cinzel', serif", letterSpacing: '0.5px',
+        background: active ? 'linear-gradient(180deg, #d4af37 0%, #997316 100%)' : 'rgba(255,255,255,0.05)',
+        color: active ? '#1a0d02' : '#d9c6a3',
+        border: active ? '1.5px solid #ffd700' : '1px solid #54412f',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ─── Stat bar (0–50 scale for attack/defense, 0–100 for morale) ──────────────
+function StatBar({ label, value, max, color }) {
+  const pct = Math.max(4, Math.min(100, (value / max) * 100));
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '8.5px', color: '#cdb994' }}>
+      <span style={{ width: 24, fontWeight: 800 }}>{label}</span>
+      <div style={{ flex: 1, height: 5, background: '#0b0805', borderRadius: 3, overflow: 'hidden', border: '0.5px solid #3a2a18' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color }} />
+      </div>
+      <span style={{ width: 20, textAlign: 'right', color: '#ffe18f', fontWeight: 800 }}>{value}</span>
+    </div>
+  );
+}
+
+// ─── Recruitable unit card ───────────────────────────────────────────────────
+function RecruitCard({ tpl, isFull, canAfford, onRecruit }) {
+  const tier = TIER_STYLE[tpl.tier] || TIER_STYLE.M;
+  const classMeta = UNIT_CLASSES[tpl.unitClass] || UNIT_CLASSES.melee;
+  const disabled = isFull || tpl.locked || !canAfford;
+  const reason = tpl.locked ? tpl.lockedReason : isFull ? 'Legion full' : !canAfford ? 'Not enough Denarii' : null;
+  const roman = tpl.typeId === 'sword_levis' || tpl.typeId === 'javelins';
+  return (
+    <div
+      data-ui-layer="true"
+      style={{
+        background: 'linear-gradient(180deg, #241b12 0%, #161009 100%)',
+        border: `1.5px solid ${tpl.locked ? '#3a2e22' : tier.color + '88'}`,
+        borderRadius: 6,
+        padding: '9px 11px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        opacity: tpl.locked ? 0.55 : 1,
+        boxShadow: '0 3px 10px rgba(0,0,0,0.55)',
+      }}
+    >
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ width: 44, height: 58, flexShrink: 0, background: '#0e0b07', border: `1.5px solid ${tier.color}`, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+          {roman
+            ? <UnitCardArt typeId={tpl.typeId} unitClass={tpl.unitClass} />
+            : <span style={{ fontSize: 28 }}>{tpl.icon}</span>}
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: '12.5px', fontWeight: 900, color: '#ffd700', lineHeight: 1.15 }}>{tpl.name}</div>
+          <div style={{ display: 'flex', gap: 5, marginTop: 3, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '8px', fontWeight: 900, padding: '1px 5px', borderRadius: 3, color: tier.color, background: tier.bg, border: `1px solid ${tier.color}66` }}>{tier.label}</span>
+            <span style={{ fontSize: '8px', fontWeight: 800, padding: '1px 5px', borderRadius: 3, color: '#d9c6a3', background: 'rgba(255,255,255,0.07)' }}>{classMeta.icon} {tpl.category}</span>
+            {tpl.mercenary && <span style={{ fontSize: '8px', fontWeight: 800, padding: '1px 5px', borderRadius: 3, color: '#e6a04a', background: 'rgba(120,70,0,0.35)' }}>MERCENARY</span>}
+          </div>
+        </div>
+      </div>
+      <div style={{ fontSize: '8.5px', color: '#bba488', lineHeight: 1.35, minHeight: 34 }}>{tpl.description}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <StatBar label="ATK" value={tpl.attack} max={42} color="linear-gradient(90deg,#9b2d20,#e74c3c)" />
+        <StatBar label="DEF" value={tpl.defense} max={42} color="linear-gradient(90deg,#1f5f99,#4aa3e8)" />
+        <StatBar label="MOR" value={tpl.morale} max={95} color="linear-gradient(90deg,#8a6d10,#ffd700)" />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontSize: '10.5px', color: canAfford ? '#ffd700' : '#e74c3c', fontWeight: 800 }}>
+          🪙 {tpl.cost}
+          <span style={{ color: '#8f7d5f', fontWeight: 600, fontSize: '9px' }}> · upkeep {tpl.upkeep}</span>
+        </div>
+        <button
+          data-ui-layer="true"
+          disabled={disabled}
+          title={reason || ''}
+          onClick={onRecruit}
+          style={{
+            padding: '5px 11px',
+            background: disabled ? '#3a3a3a' : 'linear-gradient(180deg, #961e15 0%, #5e120d 100%)',
+            border: disabled ? '1px solid #555' : '1.5px solid #ffd700',
+            borderRadius: 4,
+            color: disabled ? '#8a8a8a' : '#ffffff',
+            fontFamily: "'Cinzel', serif",
+            fontSize: '9.5px',
+            fontWeight: 900,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            letterSpacing: '0.5px',
+          }}
+        >
+          {reason ? reason.toUpperCase().slice(0, 18) : '+ EQUIP COHORT'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Roman Army Division Bar Component (20 Slots) ───────────────────────
 export default function RomanArmyBar({
   general,
   onRecruitUnit,
   onDisbandUnit,
   onClose,
+  recruitOptions,      // { cultureKey, cultureLabel, local[], roman[] } from troopCatalog.getRecruitOptions
+  locationName,        // nearest province name
+  locationOwned,       // true if the player controls that province
+  treasury = 0,
 }) {
   const [showRecruitDrawer, setShowRecruitDrawer] = useState(false);
   const [selectedUnitId, setSelectedUnitId] = useState(null);
+  const [drawerTab, setDrawerTab] = useState('local');
+  const [classFilter, setClassFilter] = useState('all');
 
   if (!general) return null;
 
@@ -421,19 +544,17 @@ export default function RomanArmyBar({
   const totalTroops = units.reduce((sum, u) => sum + Math.max(0, u.men ?? u.count ?? 1000), 0);
 
   const handleRecruit = (template) => {
-    if (isFull) return;
-    onRecruitUnit({
-      id: `cohort-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-      typeId: template.typeId,
-      name: template.name,
-      unitClass: template.unitClass,
-      men: template.men,
-      attack: template.attack,
-      defense: template.defense,
-      morale: template.morale,
-      veterancy: 1,
-    });
+    if (isFull || template.locked || treasury < template.cost) return;
+    onRecruitUnit(instantiateCohort(template, 'cohort', { recruitCost: template.cost }), template.cost);
   };
+
+  const opts = recruitOptions || { cultureKey: 'rome', cultureLabel: 'Roman Republic', local: [], roman: [] };
+  const hasLocal = opts.local.length > 0 && opts.cultureKey !== 'rome';
+  const activeTab = hasLocal ? drawerTab : 'roman';
+  const rawList = activeTab === 'local' ? opts.local : (opts.cultureKey === 'rome' ? [...opts.local, ...opts.roman] : opts.roman);
+  const shownList = rawList
+    .filter(t => classFilter === 'all' || t.unitClass === classFilter)
+    .sort((a, b) => ({ E: 0, M: 1, L: 2 }[a.tier] - { E: 0, M: 1, L: 2 }[b.tier]) || a.cost - b.cost);
 
   return (
     <div
@@ -467,123 +588,95 @@ export default function RomanArmyBar({
             background: 'linear-gradient(180deg, #1b130b 0%, #0d0a07 100%)',
             border: '2px solid #ffd700',
             borderRadius: 7,
-            padding: '10px 16px',
+            padding: '10px 14px 12px',
             boxShadow: '0 14px 40px rgba(0,0,0,0.95), 0 0 20px rgba(255, 215, 0, 0.35)',
             fontFamily: "'Cinzel', Georgia, serif",
             display: 'flex',
             flexDirection: 'column',
-            gap: 10,
+            gap: 8,
           }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: '13.5px', color: '#ffd700', fontWeight: 900, letterSpacing: '0.8px' }}>
-                🏛️ RAISE UNITS — PROVINCIAL LEGION RECRUITMENT ({units.length}/{maxUnits} COHORTS)
-              </span>
-              <span style={{ fontSize: '10px', color: '#c4ad8e' }}>
-                Each cohort equips 1,000 Roman troops into the active division
-              </span>
+          {/* Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: '13px', color: '#ffd700', fontWeight: 900, letterSpacing: '0.8px' }}>
+                🏛️ RAISE UNITS — {units.length}/{maxUnits} COHORTS
+              </div>
+              <div style={{ fontSize: '10px', color: '#c4ad8e', marginTop: 2 }}>
+                📍 Army stands near <b style={{ color: '#ffe18f' }}>{locationName || 'open country'}</b>
+                {' · '}
+                {locationOwned
+                  ? <span style={{ color: '#58d68d' }}>loyal province — local troops at full price, elites available</span>
+                  : <span style={{ color: '#e6a04a' }}>foreign land — local troops hired as mercenaries (+50%), no elites</span>}
+              </div>
             </div>
-
-            <button
-              data-ui-layer="true"
-              onClick={() => {
-                RomanAudio.playClick();
-                setShowRecruitDrawer(false);
-              }}
-              style={{
-                background: '#2a110a',
-                border: '1px solid #733118',
-                color: '#ffe18f',
-                padding: '3px 9px',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontWeight: 800,
-                fontSize: '11px',
-              }}
-            >
-              ✕ CLOSE
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: '12px', color: '#ffd700', fontWeight: 900 }}>🪙 {Math.floor(treasury).toLocaleString()}</span>
+              <button
+                data-ui-layer="true"
+                onClick={() => { RomanAudio.playClick(); setShowRecruitDrawer(false); }}
+                style={{ background: '#2a110a', border: '1px solid #733118', color: '#ffe18f', padding: '3px 9px', borderRadius: 4, cursor: 'pointer', fontWeight: 800, fontSize: '11px' }}
+              >
+                ✕ CLOSE
+              </button>
+            </div>
           </div>
 
-          {/* Hirable Unit Cards (Sword Levis & Javelins) */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
-            {HIRABLE_UNITS.map((tpl) => (
-              <div
+          {/* Tabs + class filter */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {hasLocal && (
+                <DrawerTab active={activeTab === 'local'} onClick={() => setDrawerTab('local')}>
+                  🌍 Local · {opts.cultureLabel}
+                </DrawerTab>
+              )}
+              <DrawerTab active={activeTab === 'roman'} onClick={() => setDrawerTab('roman')}>
+                🦅 Roman Line
+              </DrawerTab>
+            </div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[['all', 'All'], ['melee', '⚔ Melee'], ['ranged', '🏹 Ranged'], ['mounted', '🐎 Mounted']].map(([id, label]) => (
+                <button
+                  key={id}
+                  data-ui-layer="true"
+                  onClick={() => setClassFilter(id)}
+                  style={{
+                    padding: '3px 9px', fontSize: '10px', fontWeight: 800, cursor: 'pointer', borderRadius: 11,
+                    fontFamily: "'Cinzel', serif",
+                    background: classFilter === id ? '#ffd700' : 'rgba(255,255,255,0.06)',
+                    color: classFilter === id ? '#1a0d02' : '#d9c6a3',
+                    border: classFilter === id ? '1px solid #ffd700' : '1px solid #54412f',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Unit cards */}
+          <div
+            data-ui-layer="true"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))',
+              gap: 10,
+              maxHeight: 'min(46vh, 380px)',
+              overflowY: 'auto',
+              paddingRight: 4,
+            }}
+          >
+            {shownList.length === 0 && (
+              <div style={{ color: '#9a8a70', fontSize: 11, padding: 14 }}>No units of that class are available here.</div>
+            )}
+            {shownList.map((tpl) => (
+              <RecruitCard
                 key={tpl.typeId}
-                data-ui-layer="true"
-                style={{
-                  background: 'linear-gradient(180deg, #241b12 0%, #161009 100%)',
-                  border: '1.5px solid #5a4022',
-                  borderRadius: 6,
-                  padding: '10px 14px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.6)',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div
-                    style={{
-                      width: 44,
-                      height: 58,
-                      background: '#0e0b07',
-                      border: '1.5px solid #ffd700',
-                      borderRadius: 4,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <UnitCardArt typeId={tpl.typeId} unitClass={tpl.unitClass} />
-                  </div>
-
-                  <div>
-                    <div style={{ fontSize: '14px', fontWeight: 900, color: '#ffd700' }}>
-                      {tpl.name}
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#48b870', fontWeight: 800, marginTop: 1 }}>
-                      {tpl.icon} {UNIT_CLASSES[tpl.unitClass].label} • 1,000 Roman Soldiers
-                    </div>
-                    <div style={{ fontSize: '8.5px', color: '#bba488', marginTop: 3, maxWidth: 280, lineHeight: 1.35 }}>
-                      {tpl.description}
-                    </div>
-                    <div style={{ fontSize: '9px', color: '#e0c294', marginTop: 4 }}>
-                      <b>Atk:</b> {tpl.attack} | <b>Def:</b> {tpl.defense} | <b>Morale:</b> {tpl.morale}%
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-                  <div style={{ fontSize: '11px', color: '#ffd700', fontWeight: 800 }}>
-                    🪙 {tpl.cost} Denarii
-                  </div>
-                  <button
-                    data-ui-layer="true"
-                    disabled={isFull}
-                    onClick={() => handleRecruit(tpl)}
-                    style={{
-                      padding: '7px 14px',
-                      background: isFull
-                        ? '#444'
-                        : 'linear-gradient(180deg, #961e15 0%, #5e120d 100%)',
-                      border: isFull ? '1px solid #666' : '1.5px solid #ffd700',
-                      borderRadius: 4,
-                      color: isFull ? '#888' : '#ffffff',
-                      fontFamily: "'Cinzel', serif",
-                      fontSize: '10.5px',
-                      fontWeight: 900,
-                      cursor: isFull ? 'not-allowed' : 'pointer',
-                      letterSpacing: '0.6px',
-                      boxShadow: isFull ? 'none' : '0 2px 8px rgba(150,30,21,0.7)',
-                    }}
-                  >
-                    {isFull ? 'LEGION FULL' : '+ EQUIP COHORT'}
-                  </button>
-                </div>
-              </div>
+                tpl={tpl}
+                isFull={isFull}
+                canAfford={treasury >= tpl.cost}
+                onRecruit={() => handleRecruit(tpl)}
+              />
             ))}
           </div>
         </div>

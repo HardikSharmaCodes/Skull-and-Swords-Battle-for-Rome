@@ -16,7 +16,8 @@ import {
   RomanAudio,
 } from './gameEngine';
 import RomanSettlementBar from './RomanSettlementBar';
-import RomanArmyBar, { UNIT_CLASSES, HIRABLE_UNITS } from './RomanArmyBar';
+import RomanArmyBar, { UNIT_CLASSES } from './RomanArmyBar';
+import { getRecruitOptions, composeLocalArmy } from './troopCatalog';
 import BattleModal, { generateGarrison, computeBattle, simulateFieldBattleOutcome, computeFieldBattle } from './BattleModal';
 import { drawSiteVectorIcon } from './SiteIcons';
 import {
@@ -27,6 +28,10 @@ import {
   calculateOpinionScore,
   tickDiplomacyAndEconomy,
   evaluateAiMilitaryDecisions,
+  resolveAiAssault,
+  areRootsAtWar,
+  declareWar,
+  noteClash,
   getRootController,
   getProvinceDisplayColor,
   computeWasta,
@@ -911,8 +916,23 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
     addToast(`🦅 ${newGeneral.name} raised at ${prov.site} — Legion banner planted!`, 'success');
   }, [addToast]);
 
-  const handleRecruitUnit = useCallback((newUnit) => {
+  // Spend / earn the player's gold in BOTH the UI state and the simulation ledger
+  // (the turn tick re-reads the ledger, so spending only in React state would be refunded).
+  const adjustPlayerGold = useCallback((delta) => {
+    const dip = diplomacyStateRef.current;
+    if (dip?.treasuries) dip.treasuries.rome = Math.max(0, (dip.treasuries.rome || 0) + delta);
+    setPlayerTreasury(t => Math.max(0, t + delta));
+  }, []);
+
+  const handleRecruitUnit = useCallback((newUnit, cost = 0) => {
     if (!selectedGeneralRef.current) return;
+    if (cost > 0) {
+      const have = diplomacyStateRef.current?.treasuries?.rome ?? 0;
+      if (have < cost) {
+        addToast(`Treasury insufficient! ${newUnit.name} costs ${cost} Denarii.`, 'error');
+        return;
+      }
+    }
     const targetGenId = selectedGeneralRef.current;
     setGenerals(prev => prev.map(g => {
       if (g.id !== targetGenId) return g;
@@ -923,9 +943,10 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
     if (gRef && (gRef.units || []).length < (gRef.maxUnits || 20)) {
       gRef.units = [...(gRef.units || []), newUnit];
     }
+    if (cost > 0) adjustPlayerGold(-cost);
     RomanAudio.playMarch();
-    addToast(`🛡️ ${newUnit.name} (1,000 troops) equipped to legion!`, 'success');
-  }, [addToast]);
+    addToast(`🛡️ ${newUnit.name} (1,000 troops) equipped to legion${cost ? ` (-${cost} 🪙)` : ''}!`, 'success');
+  }, [addToast, adjustPlayerGold]);
 
   const handleDisbandUnit = useCallback((unitId) => {
     if (!selectedGeneralRef.current) return;
@@ -970,6 +991,13 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
       gRef.battleTargetSite = site;
     }
 
+    {
+      const dip = diplomacyStateRef.current;
+      const targetRoot = dip ? getRootController(site.id, dip.provinceOwners) : null;
+      if (dip && targetRoot !== null && targetRoot !== playerHomeRegion.id) {
+        declareWar(dip, regionsData.regions, playerHomeRegion.id, targetRoot);
+      }
+    }
     addToast(`⚔️ WAR DECLARED! ${general.name}'s legion marches on ${site.site}!`, 'error');
     setWarDeclarationPrompt(null);
   }, [addToast]);
@@ -1204,6 +1232,13 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
           }
 
           if (interceptedAiGen) {
+            // Marching into a foreign host is an act of war.
+            {
+              const aiRootI = getRootController(interceptedAiGen.homeProvinceId || interceptedAiGen.faction, cqMap);
+              if (curDipState && declareWar(curDipState, regionsData.regions, playerHomeRegion.id, aiRootI)) {
+                addToast(`⚔️ Your legion attacked a ${FACTION_CONFIG[interceptedAiGen.faction]?.shortName || 'foreign'} host — war is declared!`, 'error');
+              }
+            }
             gen.status = 'idle';
             gen.path = [];
             gen.routeInfo = null;
@@ -1280,9 +1315,12 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
           dt,
           regions: regionsData.regions,
           playerLegionUnits: currentGenerals[0]?.units || [],
-          onWarDeclared: ({ aggressor, target, announcement }) => {
+          onWarDeclared: ({ aggressor, target, announcement, involvesPlayer }) => {
             RomanAudio.playWar();
-            addToast(announcement, 'error');
+            addToast(involvesPlayer ? `${announcement} Your frontier is in danger!` : announcement, 'error');
+          },
+          onPeaceMade: ({ aName, bName, involvesPlayer }) => {
+            addToast(`🕊️ PEACE: ${aName} and ${bName} have agreed to a truce.`, involvesPlayer ? 'success' : 'info');
           },
           onTurnComplete: ({ turn, playerIncome, playerUpkeep, playerNet, treasury }) => {
             RomanAudio.playCoin();
@@ -1304,7 +1342,8 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
             regions: regionsData.regions,
             settlementGarrisons: settlementGarrisonsRef.current,
             playerLegion: currentGenerals[0],
-            onAiMarchOrder: ({ general, action, targetRegion, powerRatio }) => {
+            playerGenerals: generalsRef.current,
+            onAiMarchOrder: ({ general, action, targetRegion, powerRatio, reason }) => {
               const path = calculatePath(general.x, general.y, targetRegion.center[0], targetRegion.center[1], 'terrain');
               general.target = { x: targetRegion.center[0], y: targetRegion.center[1] };
               general.path = path;
@@ -1314,8 +1353,8 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
               const hostLabel = general.homeSite || FACTION_CONFIG[general.faction]?.shortName || 'Provincial Host';
               if (action === 'attack') {
                 addToast(`⚔️ ${general.name} (${hostLabel}) advancing across border to assault ${targetRegion.site}!`, 'warning');
-              } else {
-                addToast(`🛡️ ${general.name} (${hostLabel}) redeploying to frontier at ${targetRegion.site}!`, 'info');
+              } else if (reason === 'defend') {
+                addToast(`🛡️ ${general.name} (${hostLabel}) rushing to defend ${targetRegion.site}!`, 'info');
               }
             },
           });
@@ -1405,36 +1444,39 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
                     }
                   }
                 } else {
-                  // Auto-simulate the battle against the settlement garrison
-                  const elev = getElevationAt(targetReg.center[0], targetReg.center[1]);
-                  const existingG = settlementGarrisonsRef.current.get(targetReg.id) || generateGarrison(targetReg.weight || 4);
-                  const bRes = computeBattle(aiGen, targetReg, targetReg.weight || 4, Math.max(0, elev), 'balanced', existingG);
-                  const atkWins = Math.random() * 100 < bRes.atkWinChance;
-
-                  if (atkWins) {
-                    // Conquering province claims the settlement into its empire tree
-                    const conqueringControllerId = aiGen.homeProvinceId || aiGen.faction;
-                    updatedDip.provinceOwners.set(targetReg.id, conqueringControllerId);
-                    setConqueredRegions(prev => new Map(prev).set(targetReg.id, conqueringControllerId));
-                    settlementGarrisonsRef.current.set(targetReg.id, {
-                      cohortCount: 1,
-                      units: [{ id: `occ-${Date.now()}`, name: `${aiGen.name} Garrison`, men: 500 }],
-                      totalMen: 500
-                    });
-
-                    const isTargetPlayerOwned = (getRootController(targetReg.id, conqueredRegionsRef.current) === playerHomeRegion.id);
-                    if (isTargetPlayerOwned) {
-                      addToast(`⚔️ BATTLE SIMULATED: ${aiGen.name} overwhelmed garrison and conquered ${targetReg.site} from your realm!`, 'error');
-                    } else {
-                      addToast(`⚔️ BATTLE SIMULATED: ${aiGen.name} conquered ${targetReg.site}!`, 'warning');
-                    }
+                  // Auto-simulate the assault against the settlement garrison (both sides bleed)
+                  const atkRoot = getRootController(aiGen.homeProvinceId || aiGen.faction, updatedDip.provinceOwners);
+                  const defRoot = getRootController(targetReg.id, updatedDip.provinceOwners);
+                  if (atkRoot === defRoot) {
+                    // Someone else already took it — nothing to assault.
                   } else {
-                    // Garrison defended successfully
+                    noteClash(updatedDip, atkRoot, defRoot);
+                    const out = resolveAiAssault(aiGen, targetReg, settlementGarrisonsRef.current);
                     const isTargetPlayerOwned = (getRootController(targetReg.id, conqueredRegionsRef.current) === playerHomeRegion.id);
-                    if (isTargetPlayerOwned) {
-                      addToast(`🛡️ BATTLE SIMULATED: Garrison at ${targetReg.site} repelled assault by ${aiGen.name}!`, 'success');
+                    aiGen.units = out.survivingAtk;
+
+                    if (out.atkWins) {
+                      // Conquering realm claims the settlement into its empire tree
+                      updatedDip.provinceOwners.set(targetReg.id, atkRoot);
+                      setConqueredRegions(prev => new Map(prev).set(targetReg.id, atkRoot));
+                      settlementGarrisonsRef.current.set(targetReg.id, {
+                        cohortCount: 1,
+                        units: [{ id: `occ-${Date.now()}`, name: `${aiGen.name} Garrison`, type: 'sword_levis', men: 500, attack: 30, defense: 30, morale: 60 }],
+                        totalMen: 500,
+                      });
+                      addToast(isTargetPlayerOwned
+                        ? `⚔️ ${aiGen.name} overwhelmed the garrison and conquered ${targetReg.site} from your realm!`
+                        : `⚔️ ${aiGen.name} conquered ${targetReg.site}!`, isTargetPlayerOwned ? 'error' : 'warning');
                     } else {
-                      addToast(`🛡️ BATTLE SIMULATED: ${targetReg.site} garrison repelled ${aiGen.name}!`, 'info');
+                      settlementGarrisonsRef.current.set(targetReg.id, out.newGarrison);
+                      addToast(isTargetPlayerOwned
+                        ? `🛡️ Garrison at ${targetReg.site} repelled the assault by ${aiGen.name}!`
+                        : `🛡️ ${targetReg.site} garrison repelled ${aiGen.name}!`, isTargetPlayerOwned ? 'success' : 'info');
+                    }
+
+                    if (aiGen.units.length === 0) {
+                      updatedDip.aiGenerals = updatedDip.aiGenerals.filter(g => g.id !== aiGen.id);
+                      addToast(`💀 ${aiGen.name} was shattered at ${targetReg.site} and disbanded.`, 'info');
                     }
                   }
                 }
@@ -1457,9 +1499,11 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
             const root1 = getRootController(g1.homeProvinceId || g1.faction, cqMap);
             const root2 = getRootController(g2.homeProvinceId || g2.faction, cqMap);
             if (root1 === root2) continue; // Same faction/empire alliance
+            if (!areRootsAtWar(updatedDip, root1, root2)) continue; // Only fight realms we are at war with
 
             const dist = Math.hypot(g1.x - g2.x, g1.y - g2.y);
             if (dist < 45) {
+              noteClash(updatedDip, root1, root2);
               const elev = Math.max(0, getElevationAt(g1.x, g1.y));
               const res = simulateFieldBattleOutcome(g1, g2, elev);
               const fConfWinner = FACTION_CONFIG[res.winner.faction] || FACTION_CONFIG.independent;
@@ -2559,6 +2603,19 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
   const activeScout = scouts.find(s => s.id === selectedScoutId) || scouts[0];
   const selectedGeneral = generals.find(g => g.id === selectedGeneralId);
 
+  // Location-based recruitment: troop types come from the province the army is standing in.
+  const recruitCtx = (() => {
+    if (!selectedGeneral) return null;
+    let near = null, bd = Infinity;
+    for (const r of regionsData.regions) {
+      const d = Math.hypot(selectedGeneral.x - r.center[0], selectedGeneral.y - r.center[1]);
+      if (d < bd) { bd = d; near = r; }
+    }
+    const owners = diplomacyStateRef.current?.provinceOwners;
+    const owned = !!near && !!owners && getRootController(near.id, owners) === playerHomeRegion.id;
+    return { near, owned, options: getRecruitOptions(near, owned) };
+  })();
+
   return (
     <div
       ref={containerRef}
@@ -3128,7 +3185,7 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
                       onClick={() => {
                         if (wastaScore >= 60) {
                           RomanAudio.playCoin();
-                          setPlayerTreasury(t => t + 150);
+                          adjustPlayerGold(150);
                           addToast(`🏺 Trade caravan established with ${selectedProvince.site}! +150 Denarii bonus received.`, 'success');
                         }
                       }}
@@ -3198,7 +3255,7 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
                             addToast('Treasury insufficient! Mobilizing a provincial legion requires 500 Denarii.', 'error');
                             return;
                           }
-                          setPlayerTreasury(t => t - 500);
+                          adjustPlayerGold(-500);
                           const newId = `general-${Date.now()}`;
                           const newGeneral = {
                             id: newId,
@@ -3217,16 +3274,16 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
                             baseSpeedKmPerMin: 38,
                             maxUnits: 20,
                             units: [
-                              { id: `${newId}-u1`, name: `${selectedProvince.site} Veteran Cohort`, type: 'sword_levis', men: 1000, attack: 35, defense: 33, morale: 80 },
-                              { id: `${newId}-u2`, name: `${selectedProvince.site} Hastati`, type: 'sword_levis', men: 1000, attack: 33, defense: 30, morale: 75 },
-                              { id: `${newId}-u3`, name: `${selectedProvince.site} Auxiliary Archers`, type: 'javelins', men: 1000, attack: 36, defense: 22, morale: 75 },
+                              { id: `${newId}-u1`, name: `${selectedProvince.site} Veteran Cohort`, typeId: 'sword_levis', type: 'sword_levis', unitClass: 'melee', men: 1000, attack: 35, defense: 33, morale: 80 },
+                              { id: `${newId}-u2`, name: `${selectedProvince.site} Hastati`, typeId: 'sword_levis', type: 'sword_levis', unitClass: 'melee', men: 1000, attack: 33, defense: 30, morale: 75 },
+                              ...composeLocalArmy(selectedProvince, `${newId}-loc`, 0.3).slice(0, 2),
                             ],
                           };
                           setGenerals(prev => [...prev, newGeneral]);
                           setSelectedGeneralId(newId);
                           selectedGeneralRef.current = newId;
                           RomanAudio.playMarch();
-                          addToast(`🦅 Legio ${selectedProvince.site} mobilized with 3,000 men (-500 Denarii)! Banner planted.`, 'success');
+                          addToast(`🦅 Legio ${selectedProvince.site} mobilized with 4,000 men — Romans plus local levies (-500 Denarii)! Banner planted.`, 'success');
                         }}
                         style={{
                           width: '100%',
@@ -3415,6 +3472,10 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
       {selectedGeneral && (
         <RomanArmyBar
           general={selectedGeneral}
+          recruitOptions={recruitCtx?.options}
+          locationName={recruitCtx?.near?.site}
+          locationOwned={recruitCtx?.owned}
+          treasury={playerTreasury}
           onRecruitUnit={handleRecruitUnit}
           onDisbandUnit={handleDisbandUnit}
           onClose={() => {
@@ -3435,6 +3496,9 @@ export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr'
             style={{
               background: 'rgba(18, 24, 34, 0.96)',
               border: '1.5px solid #ffd700',
+              borderLeft: `5px solid ${t.type === 'error' ? '#e74c3c' : t.type === 'warning' ? '#f39c12' : t.type === 'success' ? '#2ecc71' : '#5dade2'}`,
+              maxWidth: 380,
+              animation: 'slideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
               borderRadius: 6,
               padding: '10px 14px',
               color: '#ffe18f',
