@@ -301,6 +301,7 @@ output_data = {
     "regions": updated_regions,
     "borderCount": reg_data.get('borderCount', 0),
     "borderLines": reg_data.get('borderLines', []),
+    "borders": reg_data.get('borders', []),
     "borderSvgPath": reg_data.get('borderSvgPath', '')
 }
 

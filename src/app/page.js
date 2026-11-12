@@ -153,9 +153,15 @@ export default function GameRoot() {
     setLaunchNotification({ title, msg });
   };
 
-  // If debug mode is active, render our full interactive 400-site tactical campaign map
-  if (currentView === 'debug') {
-    return <CampaignMapView onExitToMenu={() => setCurrentView('main')} />;
+  // If debug mode or campaign view is active, render our full interactive 400-site tactical campaign map
+  if (currentView === 'debug' || currentView === 'campaign') {
+    return (
+      <CampaignMapView
+        onExitToMenu={() => setCurrentView('main')}
+        selectedFaction={selectedFaction}
+        campaignEra={campaignEra}
+      />
+    );
   }
 
   return (
@@ -759,7 +765,8 @@ export default function GameRoot() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    showLaunchTeaser('The Rise of The Emperor', 'Chapter Briefing: Octavian has been acclaimed Augustus by the Senate. Prepare to pacify the Danube frontier.');
+                    triggerSound('click');
+                    setCurrentView('campaign');
                   }}
                   style={{
                     width: '100%',
@@ -846,7 +853,8 @@ export default function GameRoot() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    showLaunchTeaser("Caesar's Journey", "Alea iacta est! The die is cast. Legio XIII Gemina marches towards Ariminum.");
+                    triggerSound('click');
+                    setCurrentView('campaign');
                   }}
                   style={{
                     width: '100%',
@@ -933,7 +941,8 @@ export default function GameRoot() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    showLaunchTeaser("Rome's Nightmare", "Hannibal ad portas! The Carthaginian host descends the Alps into the Po Valley.");
+                    triggerSound('click');
+                    setCurrentView('campaign');
                   }}
                   style={{
                     width: '100%',
@@ -1119,7 +1128,10 @@ export default function GameRoot() {
               </div>
 
               <button
-                onClick={() => showLaunchTeaser('Grand Campaign Launch', `Commencing Grand Conquest as ${selectedFaction.toUpperCase()} in ${campaignEra}. Assembling tactical theatre across 400 provinces.`)}
+                onClick={() => {
+                  triggerSound('click');
+                  setCurrentView('campaign');
+                }}
                 style={{
                   width: '100%',
                   marginTop: 18,

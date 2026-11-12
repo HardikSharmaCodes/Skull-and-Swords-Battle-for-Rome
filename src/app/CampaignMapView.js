@@ -17,7 +17,23 @@ import {
 } from './gameEngine';
 import RomanSettlementBar from './RomanSettlementBar';
 import RomanArmyBar, { UNIT_CLASSES, HIRABLE_UNITS } from './RomanArmyBar';
-import BattleModal, { generateGarrison } from './BattleModal';
+import BattleModal, { generateGarrison, computeBattle, simulateFieldBattleOutcome, computeFieldBattle } from './BattleModal';
+import { drawSiteVectorIcon } from './SiteIcons';
+import {
+  FACTION_CONFIG,
+  FACTION_NAME_MAP,
+  INITIAL_AI_GENERALS,
+  initializeDiplomacyState,
+  calculateOpinionScore,
+  tickDiplomacyAndEconomy,
+  evaluateAiMilitaryDecisions,
+  getRootController,
+  getProvinceDisplayColor,
+  computeWasta,
+  computeEmpireWasta,
+  getEmpireAllegianceName,
+  wastaLabel,
+} from './aiDiplomacyEngine';
 
 // Path2D cache for instant, zero-cost polygon fills & hover effects
 const pathCache = new Map();
@@ -300,10 +316,13 @@ function drawMapPointer(ctx, sx, sy, isSelected, isMarching, scout, now, heading
   ctx.restore();
 }
 
-// Roman Vexillum (Military Banner) for Army Generals ─────────────────────────
+// Military Banner (Vexillum) for Army Generals (Roman & AI Factions) ────────
 function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, headingAngle) {
   const sway = isMarching ? Math.sin(now * 0.014) * 2.0 : 0;
   const py = sy + sway;
+
+  const fKey = general.faction || 'rome';
+  const fConf = FACTION_CONFIG[fKey] || FACTION_CONFIG.rome;
 
   ctx.save();
 
@@ -313,7 +332,7 @@ function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, he
   ctx.ellipse(sx, sy + 3, 14, 4.5, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Pulsing gold halo when selected
+  // Pulsing halo when selected
   if (isSelected) {
     const pulse = (Math.sin(now * 0.006) + 1) / 2;
     ctx.strokeStyle = `rgba(255,215,0,${0.5 + pulse * 0.45})`;
@@ -339,11 +358,11 @@ function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, he
   ctx.fillStyle = poleGrad;
   ctx.fill();
 
-  // Eagle finial on top of pole
+  // Faction Crest Finial on top of pole
   ctx.font = '11px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('🦅', sx, poleTop - 7);
+  ctx.fillText(fConf.bannerIcon || '🦅', sx, poleTop - 7);
 
   // Horizontal cross-arm (transverse)
   const armY = poleTop + 6;
@@ -360,32 +379,33 @@ function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, he
   const bannerH = 28;
   const bannerW = 34;
 
-  // Cloth gradient — crimson/scarlet
+  // Cloth gradient — faction primary color
   const clothGrad = ctx.createLinearGradient(sx - bannerW / 2, bannerTop, sx + bannerW / 2, bannerTop + bannerH);
-  clothGrad.addColorStop(0, isSelected ? '#d0221a' : '#9e1b12');
-  clothGrad.addColorStop(0.5, '#7a1209');
-  clothGrad.addColorStop(1, '#4a0a06');
+  clothGrad.addColorStop(0, isSelected ? '#ffd700' : (fConf.color || '#9e1b12'));
+  clothGrad.addColorStop(0.6, fConf.fillColor || '#7a1209');
+  clothGrad.addColorStop(1, '#110804');
   ctx.beginPath();
   ctx.rect(sx - bannerW / 2, bannerTop, bannerW, bannerH);
   ctx.fillStyle = clothGrad;
   ctx.fill();
-  ctx.strokeStyle = '#ffd700';
+  ctx.strokeStyle = fConf.strokeColor || '#ffd700';
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
-  // Golden SPQR text inside cloth banner
-  ctx.font = "bold 7px 'Cinzel', serif";
-  ctx.fillStyle = '#ffd700';
+  // Faction text inside cloth banner
+  ctx.font = "bold 6.5px 'Cinzel', serif";
+  ctx.fillStyle = fConf.textColor || '#ffd700';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('SPQR', sx, bannerTop + 8);
+  const bannerTag = fKey === 'rome' ? 'SPQR' : (fConf.shortName.length > 7 ? fConf.shortName.substring(0, 6) : fConf.shortName).toUpperCase();
+  ctx.fillText(bannerTag, sx, bannerTop + 8);
 
-  // Eagle / Legion symbol in banner center
+  // Eagle / Faction symbol in banner center
   ctx.font = '10px sans-serif';
-  ctx.fillText('⚔️', sx, bannerTop + 20);
+  ctx.fillText(fConf.bannerIcon || '⚔️', sx, bannerTop + 20);
 
   // Tassel fringe at bottom of banner
-  ctx.strokeStyle = '#ffd700';
+  ctx.strokeStyle = fConf.strokeColor || '#ffd700';
   ctx.lineWidth = 1;
   for (let i = 0; i < 7; i++) {
     const tx = (sx - bannerW / 2) + 2 + i * (bannerW - 4) / 6;
@@ -406,7 +426,7 @@ function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, he
     ctx.lineTo(0, -1);
     ctx.lineTo(-5, 2);
     ctx.closePath();
-    ctx.fillStyle = '#ffd700';
+    ctx.fillStyle = fConf.strokeColor || '#ffd700';
     ctx.fill();
     ctx.restore();
   }
@@ -416,7 +436,7 @@ function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, he
   if (unitCount > 0) {
     ctx.beginPath();
     ctx.arc(sx + 17, poleTop - 1, 9, 0, Math.PI * 2);
-    ctx.fillStyle = '#ffd700';
+    ctx.fillStyle = fConf.strokeColor || '#ffd700';
     ctx.fill();
     ctx.strokeStyle = '#1a0d02';
     ctx.lineWidth = 1;
@@ -434,23 +454,31 @@ function drawGeneralBanner(ctx, sx, sy, isSelected, isMarching, general, now, he
   ctx.strokeStyle = 'rgba(0,0,0,0.95)';
   ctx.lineWidth = 3;
   ctx.strokeText(shortName, sx, poleTop - 18);
-  ctx.fillStyle = isSelected ? '#ffd700' : '#ffffff';
+  ctx.fillStyle = isSelected ? '#ffd700' : (fKey === 'rome' ? '#ffffff' : '#ffd59e');
   ctx.fillText(shortName, sx, poleTop - 18);
 
   ctx.restore();
 }
 
-// Pre-compute site zoom thresholds
+// Pre-compute site zoom thresholds - all settlement centers always visible
 const SITES = ancientSites.map(s => ({
   ...s,
-  minZoom: minZoomForWeight(s.weight),
+  minZoom: 0,
   minLabelZoom: minZoomForLabel(s.weight),
 }));
 
-const romeRegion = regionsData.regions.find(r => r.id === 1) || regionsData.regions[0];
-const initialKnownIds = new Set([romeRegion.id, ...(romeRegion.neighbors || [])]);
+const FACTION_KEY_MAP = {
+  spqr: 'rome',
+  carthage: 'carthage',
+  macedon: 'hellas',
+  arverni: 'gaul',
+  ptolemaic: 'ptolemy',
+  seleucid: 'independent',
+};
 
-export default function CampaignMapView({ onExitToMenu }) {
+const romeRegion = regionsData.regions.find(r => r.id === 1) || regionsData.regions[0];
+
+export default function CampaignMapView({ onExitToMenu, selectedFaction = 'spqr', campaignEra = '218 BC' }) {
   const containerRef    = useRef(null);
   const svgContainerRef = useRef(null);
   const svgElRef        = useRef(null);
@@ -459,6 +487,10 @@ export default function CampaignMapView({ onExitToMenu }) {
   const unitsCanvasRef  = useRef(null); // canvas for scouts, march paths & orders
   const sitesCanvasRef  = useRef(null); // canvas for markers & names
   const minimapCanvasRef= useRef(null);
+
+  const playerFactionKey = FACTION_KEY_MAP[selectedFaction] || selectedFaction || 'rome';
+  const playerHomeRegion = regionsData.regions.find(r => FACTION_NAME_MAP[r.faction] === playerFactionKey) || romeRegion;
+  const initialKnownIds = new Set([playerHomeRegion.id, ...(playerHomeRegion.neighbors || [])]);
 
   const cam = useRef({ x: 0, y: 0, zoom: 1, minZoom: 0.4, maxZoom: 32.0 });
   const keys = useRef({ w: false, a: false, s: false, d: false,
@@ -486,10 +518,10 @@ export default function CampaignMapView({ onExitToMenu }) {
   const [scouts, setScouts] = useState([
     {
       id: 'scout-1',
-      name: 'I Equites Speculatores (Roma)',
+      name: `I Equites Speculatores (${playerHomeRegion.site})`,
       level: 1,
-      x: romeRegion.center[0],
-      y: romeRegion.center[1],
+      x: playerHomeRegion.center[0],
+      y: playerHomeRegion.center[1],
       target: null,
       path: [],
       routeInfo: null,
@@ -527,10 +559,69 @@ export default function CampaignMapView({ onExitToMenu }) {
   const minimapDraggingRef = useRef(false);
   const exploredMaskRef    = useRef(null);
 
-  // Conquered territory tracking: Map<regionId, 'rome'>
-  const [conqueredRegions, setConqueredRegions] = useState(new Map([[1, 'rome']]));
-  const conqueredRegionsRef = useRef(new Map([[1, 'rome']]));
+  // Province ownership tracking: Map<regionId, ownerId>
+  // PROVINCE-BASED SOVEREIGNTY: each province starts as its OWN sovereign entity.
+  // Owner is the province's own numeric ID (self-sovereign), not a faction group name.
+  // When a province is conquered, it maps to the conquering province's ID.
+  // Use getRootController() to follow ownership chains for color cascading.
+  const [conqueredRegions, setConqueredRegions] = useState(() => {
+    const m = new Map();
+    for (const reg of regionsData.regions) {
+      m.set(reg.id, reg.id); // self-sovereign at start
+    }
+    return m;
+  });
+  const conqueredRegionsRef = useRef(conqueredRegions);
   useEffect(() => { conqueredRegionsRef.current = conqueredRegions; }, [conqueredRegions]);
+
+  // Precomputed lookup: region id → region object (for color cascading)
+  const regionsById = React.useMemo(() => {
+    const m = {};
+    for (const reg of regionsData.regions) m[reg.id] = reg;
+    return m;
+  }, []);
+  const regionsByIdRef = useRef(regionsById);
+  useEffect(() => { regionsByIdRef.current = regionsById; }, [regionsById]);
+
+  // Simulation Time, Pause & Play Controls
+  const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false);
+  const [gameSpeed, setGameSpeed] = useState('1x'); // 'pause' | '1x' | '2x'
+  const gameSpeedRef = useRef('1x');
+  const [turnNumber, setTurnNumber] = useState(1);
+  const [turnProgressSec, setTurnProgressSec] = useState(0);
+
+  // Imperial Treasury & Economics State (Denarii)
+  const [playerTreasury, setPlayerTreasury] = useState(7500);
+  const [playerIncome, setPlayerIncome] = useState(3900); // 39 Roman provinces initially
+  const [playerUpkeep, setPlayerUpkeep] = useState(275);  // ~11 initial cohorts * 25
+  const [playerNet, setPlayerNet] = useState(3625);
+
+  // Whole-Map AI & Diplomacy State
+  const [diplomacyState, setDiplomacyState] = useState(() => initializeDiplomacyState(regionsData.regions));
+  const diplomacyStateRef = useRef(diplomacyState);
+  useEffect(() => { diplomacyStateRef.current = diplomacyState; }, [diplomacyState]);
+  const lastAiDecisionTimeRef = useRef(0);
+
+  const handleSetSpeed = useCallback((speed) => {
+    RomanAudio.playClick();
+    if (speed === 'pause') {
+      setIsPaused(true);
+      isPausedRef.current = true;
+      setGameSpeed('pause');
+      gameSpeedRef.current = 'pause';
+    } else if (speed === '1x') {
+      setIsPaused(false);
+      isPausedRef.current = false;
+      setGameSpeed('1x');
+      gameSpeedRef.current = '1x';
+    } else if (speed === '2x') {
+      setIsPaused(false);
+      isPausedRef.current = false;
+      setGameSpeed('2x');
+      gameSpeedRef.current = '2x';
+    }
+  }, []);
 
   // Persistent Settlement Garrisons: Map<siteId, { cohortCount, units, totalMen }>
   const [settlementGarrisons, setSettlementGarrisons] = useState(new Map());
@@ -709,7 +800,8 @@ export default function CampaignMapView({ onExitToMenu }) {
     }
 
     if (bordersG) {
-      bordersG.style.display = bordersOn ? 'block' : 'none';
+      // Dynamic canvas borders handle ownership-aware rendering so same-owner borders disappear
+      bordersG.style.display = 'none';
     }
   };
 
@@ -885,18 +977,21 @@ export default function CampaignMapView({ onExitToMenu }) {
   // ─── Handle Battle Victory – capture province & eliminate garrison ───────────
   const handleBattleVictory = useCallback(({ defSite, survivingUnits, atkCasualties, defCasualties }) => {
     const matchingReg = regionsData.regions.find(r => r.id === defSite.id || r.site === defSite.site);
+    const victorProvinceId = playerHomeRegion.id;
+
     if (matchingReg) {
       setConqueredRegions(prev => {
         const next = new Map(prev);
-        next.set(matchingReg.id, 'rome');
+        next.set(matchingReg.id, victorProvinceId);
         return next;
       });
+      diplomacyStateRef.current?.provinceOwners?.set(matchingReg.id, victorProvinceId);
 
       if (typeof window !== 'undefined') {
         const svgPath = document.querySelector(`#reg-${matchingReg.id}`);
         if (svgPath) {
-          svgPath.setAttribute('fill', '#ff1a1a');
-          svgPath.setAttribute('fill-opacity', '0.55');
+          svgPath.setAttribute('fill', '#ffffff');
+          svgPath.setAttribute('fill-opacity', '0.22');
         }
       }
     }
@@ -919,9 +1014,9 @@ export default function CampaignMapView({ onExitToMenu }) {
       }
     }
 
-    addToast(`🦅 VICTORIA! ${defSite.site} captured for Rome! Garrison eliminated in assault.`, 'success');
+    addToast(`🦅 VICTORIA! ${defSite.site} conquered and united with ${playerHomeRegion.site}! Garrison eliminated in assault.`, 'success');
     RomanAudio.playDiscovery();
-  }, [addToast, battleModal]);
+  }, [addToast, battleModal, playerHomeRegion]);
 
   // ─── Handle Battle Defeat – retreat and apply real casualties to both sides ───
   const handleBattleDefeat = useCallback(({ defSite, survivingUnits, atkCasualties, defCasualties, existingGarrison }) => {
@@ -980,8 +1075,10 @@ export default function CampaignMapView({ onExitToMenu }) {
       cam.current.minZoom = fitZoom;
       if (cam.current.zoom < fitZoom) cam.current.zoom = fitZoom;
       if (cam.current.x === 0 && cam.current.y === 0) {
-        cam.current.x = (vw - MAP_WIDTH * cam.current.zoom) / 2;
-        cam.current.y = (vh - MAP_HEIGHT * cam.current.zoom) / 2;
+        const startZoom = Math.max(fitZoom * 1.5, 0.9);
+        cam.current.zoom = startZoom;
+        cam.current.x = vw / 2 - playerHomeRegion.center[0] * startZoom;
+        cam.current.y = vh / 2 - playerHomeRegion.center[1] * startZoom;
       }
     };
     updateDimensions();
@@ -992,8 +1089,13 @@ export default function CampaignMapView({ onExitToMenu }) {
 
     const tick = (now) => {
       if (lastTickTimeRef.current == null) lastTickTimeRef.current = now;
-      const dt = Math.min(0.08, (now - lastTickTimeRef.current) / 1000);
+      const rawDt = Math.min(0.08, (now - lastTickTimeRef.current) / 1000);
       lastTickTimeRef.current = now;
+
+      // When paused, simulation dt is 0 (freezes scouts, armies, AI, upkeep & timers)
+      const speedMult = isPausedRef.current ? 0 : (gameSpeedRef.current === '2x' ? 2.0 : 1.0);
+      const dt = rawDt * speedMult;
+      const cqMap = conqueredRegionsRef.current;
 
       let anyNewDiscovery = false;
       const discSet = discoveredIdsRef.current;
@@ -1084,7 +1186,65 @@ export default function CampaignMapView({ onExitToMenu }) {
             }
           }
 
-          if (gen.path.length < 2) {
+          // Check collision with enemy AI generals in open field during march
+          const curDipState = diplomacyStateRef.current;
+          let interceptedAiGen = null;
+          if (curDipState && curDipState.aiGenerals) {
+            for (let i = 0; i < curDipState.aiGenerals.length; i++) {
+              const aiGen = curDipState.aiGenerals[i];
+              if (!aiGen || !aiGen.units || aiGen.units.length === 0) continue;
+              const aiRoot = getRootController(aiGen.homeProvinceId || aiGen.faction, cqMap);
+              if (aiRoot === playerHomeRegion.id) continue;
+              const distToAi = Math.hypot(gen.x - aiGen.x, gen.y - aiGen.y);
+              if (distToAi <= 42) {
+                interceptedAiGen = aiGen;
+                break;
+              }
+            }
+          }
+
+          if (interceptedAiGen) {
+            gen.status = 'idle';
+            gen.path = [];
+            gen.routeInfo = null;
+            delete gen.battleTargetSite;
+            const elev = Math.max(0, getElevationAt(gen.x, gen.y));
+            const res = simulateFieldBattleOutcome(gen, interceptedAiGen, elev);
+            const fConf = FACTION_CONFIG[interceptedAiGen.faction] || FACTION_CONFIG.independent;
+
+            if (res.atkWins) {
+              // Player wins
+              gen.units = res.winnerUnits;
+              setGenerals(prev => prev.map(g => g.id === gen.id ? { ...g, units: res.winnerUnits } : g));
+              if (res.isLoserDeleted) {
+                curDipState.aiGenerals = curDipState.aiGenerals.filter(g => g.id !== interceptedAiGen.id);
+                addToast(`🦅 TOTAL ANNIHILATION! ${gen.name} crushed and destroyed ${interceptedAiGen.name} (${fConf.shortName})'s host in the field! Enemy unit deleted!`, 'success');
+                RomanAudio.playDiscovery();
+              } else {
+                interceptedAiGen.units = res.loserUnits;
+                addToast(`⚔️ FIELD VICTORY! ${gen.name} defeated ${interceptedAiGen.name} in open combat! Enemy casualties: -${res.loserLosses.toLocaleString()}.`, 'success');
+                RomanAudio.playDiscovery();
+              }
+            } else {
+              // AI wins
+              interceptedAiGen.units = res.winnerUnits;
+              if (res.isLoserDeleted) {
+                setGenerals(prev => prev.filter(g => g.id !== gen.id));
+                generalsRef.current = generalsRef.current.filter(g => g.id !== gen.id);
+                if (selectedGeneralRef.current === gen.id) {
+                  setSelectedGeneralId(null);
+                  selectedGeneralRef.current = null;
+                }
+                addToast(`💀 CATASTROPHIC FIELD ROUT! ${gen.name}'s legion was enveloped and annihilated by ${interceptedAiGen.name} (${fConf.shortName})! Entire force wiped out!`, 'error');
+                RomanAudio.playWar();
+              } else {
+                gen.units = res.loserUnits;
+                setGenerals(prev => prev.map(g => g.id === gen.id ? { ...g, units: res.loserUnits } : g));
+                addToast(`⚔️ FIELD DEFEAT! ${gen.name} was repelled by ${interceptedAiGen.name}! Legion casualties: -${res.loserLosses.toLocaleString()}.`, 'error');
+                RomanAudio.playWar();
+              }
+            }
+          } else if (gen.path.length < 2) {
             gen.status = 'idle';
             gen.path = [];
             gen.routeInfo = null;
@@ -1107,6 +1267,213 @@ export default function CampaignMapView({ onExitToMenu }) {
                 elevation: Math.max(0, elev),
                 existingGarrison: existingG,
               });
+            }
+          }
+        }
+      }
+
+      // ── Whole-Map AI Simulation & Diplomacy Tick ─────────────────────────
+      if (dt > 0) {
+        const curDip = diplomacyStateRef.current;
+        const updatedDip = tickDiplomacyAndEconomy({
+          state: curDip,
+          dt,
+          regions: regionsData.regions,
+          playerLegionUnits: currentGenerals[0]?.units || [],
+          onWarDeclared: ({ aggressor, target, announcement }) => {
+            RomanAudio.playWar();
+            addToast(announcement, 'error');
+          },
+          onTurnComplete: ({ turn, playerIncome, playerUpkeep, playerNet, treasury }) => {
+            RomanAudio.playCoin();
+            setTurnNumber(turn);
+            setPlayerTreasury(treasury);
+            setPlayerIncome(playerIncome);
+            setPlayerUpkeep(playerUpkeep);
+            setPlayerNet(playerNet);
+            addToast(`💰 Turn ${turn} Ledger: +${playerIncome.toLocaleString()} Denarii income, -${playerUpkeep.toLocaleString()} upkeep (Net: ${playerNet >= 0 ? '+' : ''}${playerNet.toLocaleString()})`, 'info');
+          },
+        });
+        diplomacyStateRef.current = updatedDip;
+
+        // Periodic AI Military Decisions (every 3.5 seconds)
+        if (now - lastAiDecisionTimeRef.current > 3500) {
+          lastAiDecisionTimeRef.current = now;
+          evaluateAiMilitaryDecisions({
+            state: updatedDip,
+            regions: regionsData.regions,
+            settlementGarrisons: settlementGarrisonsRef.current,
+            playerLegion: currentGenerals[0],
+            onAiMarchOrder: ({ general, action, targetRegion, powerRatio }) => {
+              const path = calculatePath(general.x, general.y, targetRegion.center[0], targetRegion.center[1], 'terrain');
+              general.target = { x: targetRegion.center[0], y: targetRegion.center[1] };
+              general.path = path;
+              general.status = action === 'attack' ? 'marching' : 'retreating';
+              general.targetSettlement = targetRegion;
+              general.action = action;
+              const hostLabel = general.homeSite || FACTION_CONFIG[general.faction]?.shortName || 'Provincial Host';
+              if (action === 'attack') {
+                addToast(`⚔️ ${general.name} (${hostLabel}) advancing across border to assault ${targetRegion.site}!`, 'warning');
+              } else {
+                addToast(`🛡️ ${general.name} (${hostLabel}) redeploying to frontier at ${targetRegion.site}!`, 'info');
+              }
+            },
+          });
+        }
+
+        // Real-time AI Generals March Animation
+        for (const aiGen of updatedDip.aiGenerals) {
+          if ((aiGen.status === 'marching' || aiGen.status === 'retreating') && aiGen.path && aiGen.path.length >= 2) {
+            const elev = getElevationAt(aiGen.x, aiGen.y);
+            const mult = Math.max(0.12, getTerrainSpeedMultiplier(elev));
+            const kmStep = (aiGen.baseSpeedKmPerMin || 35) * mult * dt;
+            let pxStep = kmStep / KM_PER_PIXEL;
+
+            while (pxStep > 0.05 && aiGen.path.length >= 2) {
+              const p1 = aiGen.path[1];
+              const segDist = Math.hypot(p1.x - aiGen.x, p1.y - aiGen.y);
+              if (pxStep >= segDist) {
+                aiGen.x = p1.x;
+                aiGen.y = p1.y;
+                pxStep -= segDist;
+                aiGen.path.shift();
+              } else {
+                const fraction = pxStep / segDist;
+                aiGen.x += (p1.x - aiGen.x) * fraction;
+                aiGen.y += (p1.y - aiGen.y) * fraction;
+                aiGen.path[0] = { x: aiGen.x, y: aiGen.y };
+                pxStep = 0;
+              }
+            }
+
+            if (aiGen.path.length < 2) {
+              aiGen.path = [];
+              const targetReg = aiGen.targetSettlement;
+              aiGen.targetSettlement = null;
+
+              if (aiGen.action === 'attack' && targetReg) {
+                aiGen.status = 'idle';
+                const targetOwner = updatedDip.provinceOwners.get(targetReg.id);
+
+                // Check if player general is near the target — if so, fight the player general first!
+                const playerGens = generalsRef.current;
+                let engagedPlayerGen = null;
+                for (const pg of playerGens) {
+                  const dist = Math.hypot(aiGen.x - pg.x, aiGen.y - pg.y);
+                  if (dist < 80) { // Within engagement range (~80 map pixels)
+                    engagedPlayerGen = pg;
+                    break;
+                  }
+                }
+
+                if (engagedPlayerGen) {
+                  // ── AI vs PLAYER FIELD BATTLE (Simulated with Unit Deletion Chance) ──
+                  const elev = getElevationAt(aiGen.x, aiGen.y);
+                  const res = simulateFieldBattleOutcome(aiGen, engagedPlayerGen, Math.max(0, elev));
+                  const fConf = FACTION_CONFIG[aiGen.faction] || FACTION_CONFIG.independent;
+
+                  if (res.atkWins) {
+                    // AI wins
+                    aiGen.units = res.winnerUnits;
+                    if (res.isLoserDeleted) {
+                      setGenerals(prev => prev.filter(g => g.id !== engagedPlayerGen.id));
+                      generalsRef.current = generalsRef.current.filter(g => g.id !== engagedPlayerGen.id);
+                      if (selectedGeneralRef.current === engagedPlayerGen.id) {
+                        setSelectedGeneralId(null);
+                        selectedGeneralRef.current = null;
+                      }
+                      addToast(`💀 CATASTROPHIC FIELD ROUT! ${aiGen.name} (${fConf.shortName}) annihilated ${engagedPlayerGen.name}'s entire force! The legion has been wiped from the map!`, 'error');
+                      RomanAudio.playWar();
+                    } else {
+                      engagedPlayerGen.units = res.loserUnits;
+                      setGenerals(prev => prev.map(g => g.id === engagedPlayerGen.id ? { ...g, units: res.loserUnits } : g));
+                      addToast(`⚔️ FIELD BATTLE! ${aiGen.name} (${fConf.shortName}) defeated ${engagedPlayerGen.name} in open combat! Casualties: -${res.loserLosses.toLocaleString()}.`, 'error');
+                      RomanAudio.playWar();
+                    }
+                  } else {
+                    // Player wins
+                    engagedPlayerGen.units = res.winnerUnits;
+                    setGenerals(prev => prev.map(g => g.id === engagedPlayerGen.id ? { ...g, units: res.winnerUnits } : g));
+                    if (res.isLoserDeleted) {
+                      updatedDip.aiGenerals = updatedDip.aiGenerals.filter(g => g.id !== aiGen.id);
+                      addToast(`🦅 TOTAL ANNIHILATION! ${engagedPlayerGen.name} completely crushed and wiped out ${aiGen.name} (${fConf.shortName})'s host in the field! Enemy force eliminated!`, 'success');
+                      RomanAudio.playDiscovery();
+                    } else {
+                      aiGen.units = res.loserUnits;
+                      addToast(`🛡️ FIELD BATTLE! ${engagedPlayerGen.name} repelled ${aiGen.name} (${fConf.shortName}) in open field! Enemy casualties: -${res.loserLosses.toLocaleString()}.`, 'success');
+                      RomanAudio.playDiscovery();
+                    }
+                  }
+                } else {
+                  // Auto-simulate the battle against the settlement garrison
+                  const elev = getElevationAt(targetReg.center[0], targetReg.center[1]);
+                  const existingG = settlementGarrisonsRef.current.get(targetReg.id) || generateGarrison(targetReg.weight || 4);
+                  const bRes = computeBattle(aiGen, targetReg, targetReg.weight || 4, Math.max(0, elev), 'balanced', existingG);
+                  const atkWins = Math.random() * 100 < bRes.atkWinChance;
+
+                  if (atkWins) {
+                    // Conquering province claims the settlement into its empire tree
+                    const conqueringControllerId = aiGen.homeProvinceId || aiGen.faction;
+                    updatedDip.provinceOwners.set(targetReg.id, conqueringControllerId);
+                    setConqueredRegions(prev => new Map(prev).set(targetReg.id, conqueringControllerId));
+                    settlementGarrisonsRef.current.set(targetReg.id, {
+                      cohortCount: 1,
+                      units: [{ id: `occ-${Date.now()}`, name: `${aiGen.name} Garrison`, men: 500 }],
+                      totalMen: 500
+                    });
+
+                    const isTargetPlayerOwned = (getRootController(targetReg.id, conqueredRegionsRef.current) === playerHomeRegion.id);
+                    if (isTargetPlayerOwned) {
+                      addToast(`⚔️ BATTLE SIMULATED: ${aiGen.name} overwhelmed garrison and conquered ${targetReg.site} from your realm!`, 'error');
+                    } else {
+                      addToast(`⚔️ BATTLE SIMULATED: ${aiGen.name} conquered ${targetReg.site}!`, 'warning');
+                    }
+                  } else {
+                    // Garrison defended successfully
+                    const isTargetPlayerOwned = (getRootController(targetReg.id, conqueredRegionsRef.current) === playerHomeRegion.id);
+                    if (isTargetPlayerOwned) {
+                      addToast(`🛡️ BATTLE SIMULATED: Garrison at ${targetReg.site} repelled assault by ${aiGen.name}!`, 'success');
+                    } else {
+                      addToast(`🛡️ BATTLE SIMULATED: ${targetReg.site} garrison repelled ${aiGen.name}!`, 'info');
+                    }
+                  }
+                }
+              } else {
+                aiGen.status = 'idle';
+              }
+            }
+          }
+        }
+
+        // ── Real-time AI vs AI Field Battles in Open Ground ─────────────────
+        const aliveAiGens = [...updatedDip.aiGenerals];
+        for (let i = 0; i < aliveAiGens.length; i++) {
+          const g1 = aliveAiGens[i];
+          if (!g1 || !g1.units || g1.units.length === 0) continue;
+          for (let j = i + 1; j < aliveAiGens.length; j++) {
+            const g2 = aliveAiGens[j];
+            if (!g2 || !g2.units || g2.units.length === 0) continue;
+
+            const root1 = getRootController(g1.homeProvinceId || g1.faction, cqMap);
+            const root2 = getRootController(g2.homeProvinceId || g2.faction, cqMap);
+            if (root1 === root2) continue; // Same faction/empire alliance
+
+            const dist = Math.hypot(g1.x - g2.x, g1.y - g2.y);
+            if (dist < 45) {
+              const elev = Math.max(0, getElevationAt(g1.x, g1.y));
+              const res = simulateFieldBattleOutcome(g1, g2, elev);
+              const fConfWinner = FACTION_CONFIG[res.winner.faction] || FACTION_CONFIG.independent;
+              const fConfLoser = FACTION_CONFIG[res.loser.faction] || FACTION_CONFIG.independent;
+
+              if (res.isLoserDeleted) {
+                updatedDip.aiGenerals = updatedDip.aiGenerals.filter(g => g.id !== res.loser.id);
+                addToast(`⚔️ FIELD BATTLE: ${res.winner.name} (${fConfWinner.shortName}) completely wiped out ${res.loser.name} (${fConfLoser.shortName})'s host in open field combat! Defeated force deleted!`, 'warning');
+              } else {
+                res.loser.units = res.loserUnits;
+                res.winner.units = res.winnerUnits;
+                addToast(`⚔️ FIELD BATTLE: ${res.winner.name} (${fConfWinner.shortName}) defeated ${res.loser.name} (${fConfLoser.shortName}) in open combat!`, 'info');
+              }
+              break;
             }
           }
         }
@@ -1181,56 +1548,58 @@ export default function CampaignMapView({ onExitToMenu }) {
       ctx.strokeRect(c.x, c.y, MAP_WIDTH * c.zoom, MAP_HEIGHT * c.zoom);
 
       // ── Conquered Territory & Border Rendering ──────────────────────────────
-      const cqMap = conqueredRegionsRef.current;
       ctx.save();
       ctx.translate(c.x, c.y);
       ctx.scale(c.zoom, c.zoom);
 
-      // 1. Fill conquered provinces with Roman red
-      for (const reg of regionsData.regions) {
-        const isRoman = cqMap.get(reg.id) === 'rome';
-        if (isRoman && reg.pathD) {
-          const rp = getRegionPath(reg.pathD);
-          if (rp) {
-            ctx.fillStyle = 'rgba(200, 24, 24, 0.40)';
-            ctx.fill(rp);
-          }
-        }
-      }
-
-      // 2. Province Borders:
-      // - If both reg and neighbor are Roman: a small subtle internal border line
-      // - Same for others: if both are non-Roman neighbors, normal clean border
-      // - Frontier (Roman vs foreign): bold Roman crimson border
+      // 1. Fill ALL provinces with their display color (each province has its own
+      //    color when self-sovereign, or takes the root controller's color after conquest)
       for (const reg of regionsData.regions) {
         if (!reg.pathD) continue;
         const rp = getRegionPath(reg.pathD);
         if (!rp) continue;
-        const regIsRoman = cqMap.get(reg.id) === 'rome';
+        // Get the display color (follows ownership tree for cascading)
+        const hex = getProvinceDisplayColor(reg.id, cqMap, regionsByIdRef.current);
+        if (!hex) continue;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.32)`;
+        ctx.fill(rp);
+      }
 
-        if (regIsRoman) {
-          // Check if it's an internal Roman province (all neighbors Roman) or frontier
-          const hasForeignNeighbor = (reg.neighbors || []).some(nid => cqMap.get(nid) !== 'rome');
-          if (hasForeignNeighbor) {
-            // Strong frontier border
-            ctx.strokeStyle = 'rgba(220, 35, 35, 0.88)';
-            ctx.lineWidth = Math.max(1.5, 2.5 / c.zoom);
-            ctx.setLineDash([]);
-            ctx.stroke(rp);
-          } else {
-            // Internal Roman shared border: small dashed gold border
-            ctx.strokeStyle = 'rgba(255, 215, 0, 0.45)';
-            ctx.lineWidth = Math.max(0.6, 1.2 / c.zoom);
-            ctx.setLineDash([3 / c.zoom, 3 / c.zoom]);
-            ctx.stroke(rp);
-            ctx.setLineDash([]);
-          }
-        } else if (showBordersRef.current) {
-          // For other settlements: small subtle border with neighbors
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-          ctx.lineWidth = Math.max(0.5, 1.0 / c.zoom);
-          ctx.setLineDash([]);
-          ctx.stroke(rp);
+      // 2. Dynamic Province & Empire Borders:
+      //    User Requirement: If two provinces have the same owner, the borders between them (not all borders), disappear!
+      //    Borders only appear at frontiers between different sovereign owners.
+      if (showBordersRef.current) {
+        const borderList = regionsData.borders || [];
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.setLineDash([]);
+
+        // Pass 1: Dark outer shadow for crisp contrast against any terrain/province fill
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.88)';
+        ctx.lineWidth = Math.max(2.4, 3.2 / c.zoom);
+        for (let i = 0; i < borderList.length; i++) {
+          const b = borderList[i];
+          const root1 = getRootController(b.id1, cqMap);
+          const root2 = getRootController(b.id2, cqMap);
+          // If two provinces have the same owner, their shared border disappears!
+          if (root1 === root2) continue;
+          const bp = getRegionPath(b.d);
+          if (bp) ctx.stroke(bp);
+        }
+
+        // Pass 2: Bright gold-parchment frontier line
+        ctx.strokeStyle = 'rgba(255, 248, 220, 0.95)';
+        ctx.lineWidth = Math.max(1.1, 1.5 / c.zoom);
+        for (let i = 0; i < borderList.length; i++) {
+          const b = borderList[i];
+          const root1 = getRootController(b.id1, cqMap);
+          const root2 = getRootController(b.id2, cqMap);
+          if (root1 === root2) continue;
+          const bp = getRegionPath(b.d);
+          if (bp) ctx.stroke(bp);
         }
       }
 
@@ -1373,6 +1742,42 @@ export default function CampaignMapView({ onExitToMenu }) {
         drawGeneralBanner(uctx, sx, sy, isSelected, isMarching, gen, now, headingAngle);
       }
 
+      // Draw march routes and vexillum banners for all AI Generals
+      const aiGens = diplomacyStateRef.current?.aiGenerals || [];
+      for (const aiGen of aiGens) {
+        if (aiGen.path && aiGen.path.length >= 2) {
+          uctx.save();
+          uctx.translate(c.x, c.y);
+          uctx.scale(c.zoom, c.zoom);
+
+          uctx.beginPath();
+          uctx.moveTo(aiGen.x, aiGen.y);
+          for (let i = 1; i < aiGen.path.length; i++) {
+            uctx.lineTo(aiGen.path[i].x, aiGen.path[i].y);
+          }
+          const fConf = FACTION_CONFIG[aiGen.faction] || FACTION_CONFIG.carthage;
+          uctx.strokeStyle = fConf.color || '#e74c3c';
+          uctx.lineWidth = Math.max(1.8, 3.5 / c.zoom);
+          uctx.setLineDash([10 / c.zoom, 7 / c.zoom]);
+          uctx.stroke();
+          uctx.setLineDash([]);
+          uctx.restore();
+        }
+
+        const sx = c.x + aiGen.x * c.zoom;
+        const sy = c.y + aiGen.y * c.zoom;
+        const isMarching = aiGen.status === 'marching' || aiGen.status === 'retreating';
+
+        let headingAngle = null;
+        if (isMarching && aiGen.path && aiGen.path.length >= 2) {
+          const p0 = aiGen.path[0];
+          const p1 = aiGen.path[1];
+          headingAngle = Math.atan2(p1.y - p0.y, p1.x - p0.x) + Math.PI / 2;
+        }
+
+        drawGeneralBanner(uctx, sx, sy, false, isMarching, aiGen, now, headingAngle);
+      }
+
       uctx.restore();
 
       // 5. Sites Canvas (Markers + Names)
@@ -1391,58 +1796,75 @@ export default function CampaignMapView({ onExitToMenu }) {
       const isFogOn = fogEnabledRef.current;
 
       for (const site of SITES) {
-        if (isFogOn && !discSitesSet.has(site.id)) continue;
-        if (c.zoom < site.minZoom) continue;
         if (site.x < frustumX0 || site.x > frustumX1 || site.y < frustumY0 || site.y > frustumY1) continue;
 
         const sx = c.x + site.x * c.zoom;
         const sy = c.y + site.y * c.zoom;
 
-        const cqMap = conqueredRegionsRef.current;
-        const isRomeOwned = cqMap.get(site.id) === 'rome' || site.id === 1;
+        const rootId = getRootController(site.id, cqMap);
+        const rootReg = regionsByIdRef.current[rootId] || site;
+        const isSelfSovereign = (rootId === site.id);
+        const isPlayerOwned = (rootId === playerHomeRegion.id);
+        const siteDisplayColor = getProvinceDisplayColor(site.id, cqMap, regionsByIdRef.current);
         const isHovered = activeHoverSite && activeHoverSite.id === site.id;
         const isSelected = selected && selected.id === site.id;
-        const baseR = site.weight >= 9 ? 8.5 : site.weight >= 7 ? 7.0 : site.weight >= 5 ? 5.5 : 4.5;
-        const r = Math.max(3.5, baseR + (isHovered || isSelected ? 2.5 : 0));
+        const isDiscovered = !isFogOn || discSitesSet.has(site.id);
 
-        // Settlement background disc: Conquered settlements get Roman crimson + gold halo
-        if (isRomeOwned) {
+        const baseR = site.weight >= 9 ? 8.5 : site.weight >= 7 ? 7.0 : site.weight >= 5 ? 5.5 : 4.5;
+        const iconSize = Math.max(8.5, Math.min(22, baseR * 1.55 + (isHovered || isSelected ? 2.5 : 0)));
+
+        // Settlement background aura (takes controller's color via ownership tree)
+        if (siteDisplayColor) {
+          const r = parseInt(siteDisplayColor.slice(1, 3), 16);
+          const g = parseInt(siteDisplayColor.slice(3, 5), 16);
+          const b = parseInt(siteDisplayColor.slice(5, 7), 16);
           sctx.beginPath();
-          sctx.arc(sx, sy, r + 5, 0, Math.PI * 2);
-          sctx.fillStyle = 'rgba(218, 41, 28, 0.65)';
+          sctx.arc(sx, sy, iconSize + 4, 0, Math.PI * 2);
+          sctx.fillStyle = isPlayerOwned ? 'rgba(218, 41, 28, 0.55)' : `rgba(${r}, ${g}, ${b}, 0.52)`;
           sctx.fill();
-          sctx.strokeStyle = '#ffd700';
-          sctx.lineWidth = 1.6;
+          const strokeHex = isPlayerOwned ? '#ffd700' : (isSelfSovereign ? siteDisplayColor : (rootReg.color || '#ffffff'));
+          sctx.strokeStyle = strokeHex;
+          sctx.lineWidth = 1.5;
           sctx.stroke();
         } else if (isHovered || isSelected) {
           sctx.beginPath();
-          sctx.arc(sx, sy, r + 4, 0, Math.PI * 2);
-          sctx.fillStyle = isSelected ? 'rgba(255, 215, 0, 0.55)' : 'rgba(255, 255, 255, 0.45)';
+          sctx.arc(sx, sy, iconSize + 4, 0, Math.PI * 2);
+          sctx.fillStyle = isSelected ? 'rgba(255, 215, 0, 0.50)' : 'rgba(255, 255, 255, 0.40)';
           sctx.fill();
         }
 
-        drawMarker(sctx, sx, sy, site.type, r);
+        // Draw Classical Architectural Silhouette Vector Icon (City, Fort, Farm, Town, etc.)
+        drawSiteVectorIcon(sctx, sx, sy, site.type, iconSize, {
+          isHovered,
+          isSelected,
+          isRomeOwned: isPlayerOwned,
+          color: isDiscovered ? '#8b4b2c' : '#5c331e',
+          stroke: isDiscovered ? '#3a1f12' : '#221108',
+        });
 
-        const showLabel = isHovered || isSelected || (c.zoom >= site.minLabelZoom);
+        const showLabel = isHovered || isSelected || (c.zoom >= (site.minLabelZoom || 1.2)) || (site.weight >= 8);
         if (showLabel) {
-          const fontSize = site.weight >= 9 ? 12 : site.weight >= 7 ? 11 : 10;
+          const fontSize = site.weight >= 9 ? 12 : site.weight >= 7 ? 11 : 9.5;
           sctx.font = `bold ${fontSize}px 'Cinzel', serif, Georgia`;
           sctx.textBaseline = 'middle';
           sctx.textAlign = 'left';
 
-          const textX = sx + r + 5;
+          const textX = sx + iconSize + 6;
           const textY = sy;
 
           sctx.strokeStyle = 'rgba(6, 10, 16, 0.95)';
-          sctx.lineWidth = 3.4;
-          const labelText = (isRomeOwned ? '🦅 ' : '') + site.site;
+          sctx.lineWidth = 3.2;
+          const ownerIcon = isPlayerOwned ? '🦅 ' : (!isSelfSovereign ? '👑 ' : '');
+          const labelText = ownerIcon + site.site;
           sctx.strokeText(labelText, textX, textY);
 
-          sctx.fillStyle = isSelected
+          // Use controller's display color for label
+          const labelColor = isSelected
             ? '#ffd700'
-            : (isRomeOwned
-                ? '#ffb3b3'
-                : (isHovered ? '#ffffff' : (site.weight >= 9 ? '#ffe18f' : site.weight >= 7 ? '#f7e3bf' : '#ebd5b7')));
+            : (isPlayerOwned
+                ? '#ffd700'
+                : (isHovered ? '#ffffff' : (siteDisplayColor || (site.weight >= 9 ? '#ffe18f' : site.weight >= 7 ? '#f7e3bf' : '#ebd5b7'))));
+          sctx.fillStyle = labelColor;
           sctx.fillText(labelText, textX, textY);
         }
       }
@@ -1463,6 +1885,25 @@ export default function CampaignMapView({ onExitToMenu }) {
         const base = getMinimapBase();
         if (base) mctx.drawImage(base, 0, 0, mw, mh);
 
+        // Overlay live custom empire territory colors on minimap (uses ownership tree cascade)
+        const minimapCqMap = conqueredRegionsRef.current;
+        mctx.save();
+        mctx.scale(mw / MAP_WIDTH, mh / MAP_HEIGHT);
+        for (const reg of regionsData.regions) {
+          if (!reg.pathD) continue;
+          const hex = getProvinceDisplayColor(reg.id, minimapCqMap, regionsByIdRef.current);
+          if (!hex) continue;
+          const rp = getRegionPath(reg.pathD);
+          if (rp) {
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            mctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.55)`;
+            mctx.fill(rp);
+          }
+        }
+        mctx.restore();
+
         const exploredMask = exploredMaskRef.current;
         if (fogEnabledRef.current && exploredMask) {
           mctx.save();
@@ -1481,14 +1922,42 @@ export default function CampaignMapView({ onExitToMenu }) {
         mctx.lineWidth = 1.5;
         mctx.strokeRect(vpX, vpY, vpW, vpH);
 
-        // Scout pin on minimap
+        // Scout pin on minimap (white)
         for (const scout of currentScouts) {
           const mx = (scout.x / MAP_WIDTH) * mw;
           const my = (scout.y / MAP_HEIGHT) * mh;
-          mctx.fillStyle = '#ff4444';
+          mctx.fillStyle = '#ffffff';
           mctx.beginPath();
-          mctx.arc(mx, my, 3.5, 0, Math.PI * 2);
+          mctx.arc(mx, my, 3, 0, Math.PI * 2);
           mctx.fill();
+        }
+
+        // Player general pins on minimap (gold)
+        for (const gen of generalsRef.current) {
+          const mx = (gen.x / MAP_WIDTH) * mw;
+          const my = (gen.y / MAP_HEIGHT) * mh;
+          mctx.fillStyle = '#ffd700';
+          mctx.strokeStyle = '#1a0d02';
+          mctx.lineWidth = 1;
+          mctx.beginPath();
+          mctx.arc(mx, my, 4, 0, Math.PI * 2);
+          mctx.fill();
+          mctx.stroke();
+        }
+
+        // AI general pins on minimap (faction color)
+        for (const aiGen of diplomacyStateRef.current?.aiGenerals || []) {
+          const fConf = FACTION_CONFIG[aiGen.faction];
+          if (!fConf) continue;
+          const mx = (aiGen.x / MAP_WIDTH) * mw;
+          const my = (aiGen.y / MAP_HEIGHT) * mh;
+          mctx.fillStyle = fConf.color || '#888';
+          mctx.strokeStyle = '#000';
+          mctx.lineWidth = 0.8;
+          mctx.beginPath();
+          mctx.arc(mx, my, 3, 0, Math.PI * 2);
+          mctx.fill();
+          mctx.stroke();
         }
       }
 
@@ -1531,6 +2000,9 @@ export default function CampaignMapView({ onExitToMenu }) {
             path: ref.path,
           };
         }));
+
+        setTurnProgressSec(diplomacyStateRef.current?.gameTimeSec || 0);
+        setPlayerTreasury(diplomacyStateRef.current?.treasuries?.rome || 7500);
         lastHudUpdate = now;
       }
 
@@ -1554,10 +2026,50 @@ export default function CampaignMapView({ onExitToMenu }) {
         const mapX = (e.clientX - c.x) / c.zoom;
         const mapY = (e.clientY - c.y) / c.zoom;
 
-        // If a general is selected, check if right-clicking ON a settlement → Battle!
+        // If a general is selected, check if right-clicking ON an AI general → Army Battle!
         if (selectedGeneralRef.current) {
           const currentGeneral = generalsRef.current.find(g => g.id === selectedGeneralRef.current);
           if (currentGeneral) {
+            // First: Check if right-clicking directly ON an AI General banner → Player vs AI army battle!
+            const aiGens = diplomacyStateRef.current?.aiGenerals || [];
+            let clickedAiGen = null;
+            for (const aiGen of aiGens) {
+              const gx = c.x + aiGen.x * c.zoom;
+              const gy = c.y + aiGen.y * c.zoom;
+              const dx = Math.abs(e.clientX - gx);
+              const dy = e.clientY - gy;
+              if (dx <= 30 && dy >= -80 && dy <= 20) {
+                clickedAiGen = aiGen;
+                break;
+              }
+            }
+
+            if (clickedAiGen) {
+              // Simulate player attacking an AI general's army directly!
+              const aiGenFConf = FACTION_CONFIG[clickedAiGen.faction] || FACTION_CONFIG.independent;
+              RomanAudio.playWar();
+              // Use computeBattle to simulate a field battle between armies
+              const playerMen = (currentGeneral.units || []).reduce((s, u) => s + (u.men ?? 1000), 0);
+              const aiMen = (clickedAiGen.units || []).reduce((s, u) => s + (u.men ?? 1000), 0);
+              const playerWinChance = Math.min(90, Math.max(10, 50 + (playerMen - aiMen) / 100));
+              const playerWins = Math.random() * 100 < playerWinChance;
+              if (playerWins) {
+                // Player wins — remove some of AI general's units, weaken them
+                const lossCount = Math.max(1, Math.floor((clickedAiGen.units || []).length * 0.5));
+                clickedAiGen.units = (clickedAiGen.units || []).slice(lossCount);
+                addToast(`⚔️ FIELD BATTLE WON! ${currentGeneral.name} routed ${clickedAiGen.name} (${aiGenFConf.shortName})! Enemy army shattered!`, 'success');
+              } else {
+                // Player loses — deplete player general's units
+                const playerLossCount = Math.max(1, Math.floor((currentGeneral.units || []).length * 0.4));
+                const survivingUnits = (currentGeneral.units || []).slice(playerLossCount);
+                setGenerals(prev => prev.map(g => g.id === currentGeneral.id ? { ...g, units: survivingUnits } : g));
+                const gRef = generalsRef.current.find(g => g.id === currentGeneral.id);
+                if (gRef) gRef.units = survivingUnits;
+                addToast(`🛡️ FIELD BATTLE LOST! ${clickedAiGen.name} (${aiGenFConf.shortName}) repelled your assault! Roman cohorts scattered!`, 'error');
+              }
+              return;
+            }
+
             // Check if right-clicking on a site marker
             const clickedSiteForBattle = SITES.find(site => {
               const sx = c.x + site.x * c.zoom;
@@ -1566,6 +2078,12 @@ export default function CampaignMapView({ onExitToMenu }) {
             });
 
             if (clickedSiteForBattle) {
+              // Don't allow war declaration on territories already controlled in the player's tree
+              const rootId = getRootController(clickedSiteForBattle.id, conqueredRegionsRef.current);
+              if (rootId === playerHomeRegion.id) {
+                addToast(`🏛️ ${clickedSiteForBattle.site} is already part of your realm — no war needed!`, 'info');
+                return;
+              }
               // Show "Go for War" prompt div
               setWarDeclarationPrompt({
                 general: currentGeneral,
@@ -1617,6 +2135,69 @@ export default function CampaignMapView({ onExitToMenu }) {
 
     const onContextMenu = (e) => {
       e.preventDefault();
+      if (!selectedGeneralRef.current) return;
+      const activePlayerGen = generalsRef.current.find(g => g.id === selectedGeneralRef.current);
+      if (!activePlayerGen) return;
+
+      const c = cam.current;
+      const mapX = (e.clientX - c.x) / c.zoom;
+      const mapY = (e.clientY - c.y) / c.zoom;
+
+      // Check if right-clicked on an AI General
+      const curAiGens = diplomacyStateRef.current?.aiGenerals || [];
+      for (const aiGen of curAiGens) {
+        const gx = c.x + aiGen.x * c.zoom;
+        const gy = c.y + aiGen.y * c.zoom;
+        const dx = Math.abs(e.clientX - gx);
+        const dy = e.clientY - gy;
+        if (dx <= 28 && dy >= -76 && dy <= 14) {
+          const path = calculatePath(activePlayerGen.x, activePlayerGen.y, aiGen.x, aiGen.y, pathfindingModeRef.current);
+          const route = analyzeRoute(path, activePlayerGen.baseSpeedKmPerMin);
+          RomanAudio.playMarch();
+          activePlayerGen.target = { x: aiGen.x, y: aiGen.y };
+          activePlayerGen.path = path;
+          activePlayerGen.routeInfo = route;
+          activePlayerGen.status = 'marching';
+          delete activePlayerGen.battleTargetSite;
+          setGenerals(prev => prev.map(g => g.id === activePlayerGen.id ? { ...activePlayerGen } : g));
+          const fConf = FACTION_CONFIG[aiGen.faction] || FACTION_CONFIG.independent;
+          addToast(`⚔️ FIELD MARCH: ${activePlayerGen.name} marching to engage ${aiGen.name} (${fConf.shortName}) in the field!`, 'warning');
+          return;
+        }
+      }
+
+      // Check if right-clicked on a settlement
+      let targetSite = null;
+      for (const site of SITES) {
+        const dist = Math.hypot(mapX - site.x, mapY - site.y);
+        if (dist <= 25) {
+          targetSite = site;
+          break;
+        }
+      }
+
+      if (targetSite) {
+        const isPlayerOwned = (getRootController(targetSite.id, conqueredRegionsRef.current) === playerHomeRegion.id);
+        if (!isPlayerOwned) {
+          setWarDeclarationPrompt({ general: activePlayerGen, site: targetSite });
+          return;
+        }
+      }
+
+      // Open field march
+      const elev = getElevationAt(mapX, mapY);
+      if (elev >= 0) {
+        const path = calculatePath(activePlayerGen.x, activePlayerGen.y, mapX, mapY, pathfindingModeRef.current);
+        const route = analyzeRoute(path, activePlayerGen.baseSpeedKmPerMin);
+        RomanAudio.playMarch();
+        activePlayerGen.target = { x: mapX, y: mapY };
+        activePlayerGen.path = path;
+        activePlayerGen.routeInfo = route;
+        activePlayerGen.status = 'marching';
+        delete activePlayerGen.battleTargetSite;
+        setGenerals(prev => prev.map(g => g.id === activePlayerGen.id ? { ...activePlayerGen } : g));
+        addToast(`🦅 ${activePlayerGen.name} marching to designated coordinates in the field!`, 'info');
+      }
     };
 
     const onMouseMove = (e) => {
@@ -1674,7 +2255,7 @@ export default function CampaignMapView({ onExitToMenu }) {
         culture: nearestTerritory ? `${nearestTerritory.region} [${nearestTerritory.macroRegion?.toUpperCase() || ''}]` : null,
       };
 
-      // Check hover on General banner first
+      // Check hover on General banner first (Roman generals then AI generals)
       let hoveredUnit = null;
       for (const gen of generalsRef.current) {
         const gx = c.x + gen.x * c.zoom;
@@ -1685,6 +2266,19 @@ export default function CampaignMapView({ onExitToMenu }) {
         if (dx <= 28 && dy >= -76 && dy <= 14) {
           hoveredUnit = { ...gen, isGeneral: true };
           break;
+        }
+      }
+
+      if (!hoveredUnit && diplomacyStateRef.current?.aiGenerals) {
+        for (const aiGen of diplomacyStateRef.current.aiGenerals) {
+          const gx = c.x + aiGen.x * c.zoom;
+          const gy = c.y + aiGen.y * c.zoom;
+          const dx = Math.abs(e.clientX - gx);
+          const dy = e.clientY - gy;
+          if (dx <= 28 && dy >= -76 && dy <= 14) {
+            hoveredUnit = { ...aiGen, isGeneral: true, isAi: true };
+            break;
+          }
         }
       }
 
@@ -1705,10 +2299,8 @@ export default function CampaignMapView({ onExitToMenu }) {
 
       // Check hover on site markers
       let found = null;
-      let bestDist = 18;
+      let bestDist = 22;
       for (const site of SITES) {
-        if (fogEnabledRef.current && !discoveredIdsRef.current.has(site.id)) continue;
-        if (c.zoom < site.minZoom) continue;
         const sx = c.x + site.x * c.zoom;
         const sy = c.y + site.y * c.zoom;
         const dist = Math.hypot(e.clientX - sx, e.clientY - sy);
@@ -1768,6 +2360,34 @@ export default function CampaignMapView({ onExitToMenu }) {
             selectedProvinceRef.current = null;
             RomanAudio.playClick();
             return;
+          }
+        }
+
+        // 1b. Check if clicked directly on an AI General banner
+        const curAiGens = diplomacyStateRef.current?.aiGenerals || [];
+        for (const aiGen of curAiGens) {
+          const gx = c.x + aiGen.x * c.zoom;
+          const gy = c.y + aiGen.y * c.zoom;
+          const dx = Math.abs(e.clientX - gx);
+          const dy = e.clientY - gy;
+          if (dx <= 28 && dy >= -76 && dy <= 14) {
+            if (selectedGeneralRef.current) {
+              const activePlayerGen = generalsRef.current.find(g => g.id === selectedGeneralRef.current);
+              if (activePlayerGen) {
+                const path = calculatePath(activePlayerGen.x, activePlayerGen.y, aiGen.x, aiGen.y, pathfindingModeRef.current);
+                const route = analyzeRoute(path, activePlayerGen.baseSpeedKmPerMin);
+                RomanAudio.playMarch();
+                activePlayerGen.target = { x: aiGen.x, y: aiGen.y };
+                activePlayerGen.path = path;
+                activePlayerGen.routeInfo = route;
+                activePlayerGen.status = 'marching';
+                delete activePlayerGen.battleTargetSite;
+                setGenerals(prev => prev.map(g => g.id === activePlayerGen.id ? { ...activePlayerGen } : g));
+                const fConf = FACTION_CONFIG[aiGen.faction] || FACTION_CONFIG.independent;
+                addToast(`⚔️ MARCH ORDER: ${activePlayerGen.name} marching to engage ${aiGen.name} (${fConf.shortName}) in the field!`, 'warning');
+                return;
+              }
+            }
           }
         }
 
@@ -2361,72 +2981,281 @@ export default function CampaignMapView({ onExitToMenu }) {
             {selectedProvince.modern}
           </div>
 
-          {/* Sovereign Title & Ruler */}
-          <div style={{
-            padding: '6px 10px', borderRadius: 4, backgroundColor: '#221a12',
-            border: `1px solid ${selectedProvince.color || '#553e20'}66`, fontSize: '11px', color: '#ffe18f',
-            marginBottom: 10, lineHeight: 1.5,
-          }}>
-            <div><b>Polity:</b> {selectedProvince.sovereignName || selectedProvince.site}</div>
-            <div style={{ color: '#d4ad82', fontSize: '10.5px' }}>
-              <b>Ruler:</b> {selectedProvince.ruler || 'Assembly of Elders'}
-            </div>
-          </div>
-
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px',
-            fontSize: '11px', color: '#c8b498', borderTop: '1px solid #4a3820',
-            paddingTop: 8, marginBottom: 10,
-          }}>
-            <div><b style={{ color: '#d4a34b' }}>Classification:</b></div>
-            <div style={{ color: '#ffffff' }}>{selectedProvince.type}</div>
-
-            <div><b style={{ color: '#d4a34b' }}>Cultural Sphere:</b></div>
-            <div style={{ color: '#ffffff' }}>{selectedProvince.region}</div>
-          </div>
-
-          {/* Garrison Status */}
           {(() => {
+            const cqMap = conqueredRegionsRef.current;
+            const rootId = getRootController(selectedProvince.id, cqMap);
+            const rootProv = regionsById[rootId] || selectedProvince;
+            const isSelfSovereign = (rootId === selectedProvince.id);
+            const isPlayerOwned = (rootId === playerHomeRegion.id);
+            const provDisplayColor = getProvinceDisplayColor(selectedProvince.id, cqMap, regionsById);
+            const wastaRes = computeEmpireWasta(playerHomeRegion.id, selectedProvince.id, cqMap, regionsData.regions);
+            const wastaScore = wastaRes.wastaScore;
+            const wastaInfo = wastaLabel(wastaScore, wastaRes.nearestProvinceName, wastaRes.hops, wastaRes.isOwnEmpire);
+            const targetEmpireName = wastaRes.targetEmpireName;
+
             const w = selectedProvince.weight || 1;
-            const g = generateGarrison(w);
-            const swordCount = g.units.filter(u => u.type === 'sword_levis').length;
-            const javelCount = g.units.filter(u => u.type === 'javelins').length;
-            const isConquered = conqueredRegions.get(selectedProvince.id) === 'rome';
+            const g = settlementGarrisons.get(selectedProvince.id)
+              ?? settlementGarrisonsRef.current.get(selectedProvince.id)
+              ?? generateGarrison(w);
+            const swordCount = (g.units || []).filter(u => u.type === 'sword_levis').length;
+            const javelCount = (g.units || []).filter(u => u.type === 'javelins').length;
+            const isEliminated = g.cohortCount === 0 || g.totalMen === 0;
+
             return (
-              <div style={{ marginBottom: 10, borderTop: '1px solid #3d2b19', paddingTop: 8 }}>
-                <div style={{ fontSize: '10px', color: '#d4a34b', fontWeight: 800, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
-                  🏛️ Garrison Force
-                  {isConquered && <span style={{ marginLeft: 8, color: '#ff4444', fontSize: 9 }}>ROMAN CONTROLLED</span>}
+              <>
+                {/* Sovereign Status & Empire Allegiance */}
+                <div style={{
+                  padding: '7px 11px', borderRadius: 5, backgroundColor: '#201610',
+                  border: `1.5px solid ${provDisplayColor}88`, fontSize: '11px', color: '#ffe18f',
+                  marginBottom: 10, lineHeight: 1.5,
+                }}>
+                  {isSelfSovereign ? (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 13 }}>🏛️</span>
+                        <b style={{ color: provDisplayColor, fontSize: '11.5px' }}>{selectedProvince.sovereignName || selectedProvince.site}</b>
+                      </div>
+                      <div style={{ color: '#d4ad82', fontSize: '10px', marginTop: 2 }}>
+                        <b>Allegiance:</b> <span style={{ color: '#58d68d' }}>Sovereign Independent Nation</span>
+                      </div>
+                      <div style={{ color: '#b8a080', fontSize: '9.5px', marginTop: 1 }}>
+                        <b>Ruler:</b> {selectedProvince.ruler || 'Assembly of Magistrates'}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 13 }}>{isPlayerOwned ? '🦅' : '👑'}</span>
+                        <b style={{ color: provDisplayColor, fontSize: '11.5px' }}>
+                          {targetEmpireName}
+                        </b>
+                      </div>
+                      <div style={{ color: '#d4ad82', fontSize: '10px', marginTop: 2 }}>
+                        <b>Overlord:</b> {rootProv.ruler || rootProv.site} • <b>Subject Province:</b> {selectedProvince.site}
+                      </div>
+                    </>
+                  )}
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                  {/* Cohort bar */}
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                      {Array.from({ length: 20 }, (_, i) => (
-                        <div key={i} style={{
-                          width: 10, height: 10, borderRadius: 2,
-                          background: i < g.cohortCount
-                            ? (i < swordCount ? 'rgba(220,60,60,0.9)' : 'rgba(60,120,220,0.9)')
-                            : 'rgba(60,60,60,0.4)',
-                          border: i < g.cohortCount ? '1px solid rgba(255,255,255,0.2)' : '1px solid rgba(60,60,60,0.3)',
-                        }} />
-                      ))}
-                    </div>
-                    <div style={{ fontSize: 9, color: '#a08868', marginTop: 3 }}>
-                      {g.cohortCount}/20 Cohorts ({g.totalMen.toLocaleString()} troops)
-                    </div>
+
+                <div style={{
+                  display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 12px',
+                  fontSize: '11px', color: '#c8b498', borderTop: '1px solid #4a3820',
+                  paddingTop: 8, marginBottom: 10,
+                }}>
+                  <div><b style={{ color: '#d4a34b' }}>Classification:</b></div>
+                  <div style={{ color: '#ffffff' }}>{selectedProvince.type}</div>
+
+                  <div><b style={{ color: '#d4a34b' }}>Province Yield:</b></div>
+                  <div style={{ color: '#ffd700' }}>+{(selectedProvince.weight || 4) * 100} / turn</div>
+                </div>
+
+                {/* ── WASTA METER (Diplomatic Geographic Influence) ── */}
+                <div style={{
+                  marginBottom: 10,
+                  padding: '9px 11px',
+                  background: 'linear-gradient(145deg, rgba(26,19,14,0.95) 0%, rgba(15,10,8,0.95) 100%)',
+                  border: `1.5px solid ${wastaInfo.color}66`,
+                  borderRadius: 6,
+                  boxShadow: `0 0 14px ${wastaInfo.color}22`,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                    <span style={{ fontSize: '10px', fontWeight: 800, color: '#e8c37d', letterSpacing: 0.8, textTransform: 'uppercase' }}>
+                      📡 Diplomatic Wasta
+                    </span>
+                    <span style={{
+                      fontSize: '10px', fontWeight: 900, color: wastaInfo.color,
+                      padding: '1px 6px', borderRadius: 3, background: `${wastaInfo.color}22`,
+                      border: `1px solid ${wastaInfo.color}55`
+                    }}>
+                      {wastaScore}% • {wastaInfo.label.toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* Nearest Province / Frontier context */}
+                  <div style={{ fontSize: '9px', color: '#ffd700', marginBottom: 4 }}>
+                    {wastaRes.isOwnEmpire
+                      ? '✓ Domestic Province within your Realm'
+                      : `Measured from closest province: ${wastaRes.nearestProvinceName} (${wastaRes.hops} border hop${wastaRes.hops === 1 ? '' : 's'})`}
+                  </div>
+
+                  {/* Visual Wasta Progress Bar */}
+                  <div style={{
+                    width: '100%', height: 7, background: 'rgba(0,0,0,0.7)',
+                    borderRadius: 4, overflow: 'hidden', marginBottom: 6,
+                    border: '1px solid rgba(255,255,255,0.08)'
+                  }}>
+                    <div style={{
+                      width: `${wastaScore}%`,
+                      height: '100%',
+                      background: `linear-gradient(90deg, ${wastaInfo.color}77, ${wastaInfo.color})`,
+                      borderRadius: 4,
+                      boxShadow: `0 0 10px ${wastaInfo.color}`,
+                      transition: 'width 0.4s ease',
+                    }} />
+                  </div>
+
+                  <div style={{ fontSize: '9.5px', color: '#c8b498', lineHeight: 1.4, marginBottom: 7 }}>
+                    {wastaInfo.desc}
+                  </div>
+
+                  {/* Diplomatic Actions based on Wasta reach */}
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      disabled={wastaScore < 25}
+                      onClick={() => {
+                        if (wastaScore >= 25) {
+                          RomanAudio.playCoin();
+                          addToast(`📜 Diplomatic envoy sent to ${selectedProvince.site} (Wasta: ${wastaScore}%). Ties strengthened!`, 'info');
+                        }
+                      }}
+                      style={{
+                        flex: 1, padding: '5px 8px',
+                        background: wastaScore >= 25 ? 'linear-gradient(135deg, #2e2316 0%, #1e160e 100%)' : '#14100c',
+                        border: `1px solid ${wastaScore >= 25 ? '#b08a3c' : '#3d3022'}`,
+                        borderRadius: 4,
+                        color: wastaScore >= 25 ? '#ffd700' : '#5a4a3a',
+                        fontSize: '9.5px', fontWeight: 800,
+                        cursor: wastaScore >= 25 ? 'pointer' : 'not-allowed',
+                        fontFamily: "'Cinzel', serif"
+                      }}
+                      title={wastaScore < 25 ? 'Province too far — Wasta too low' : 'Send diplomatic envoy'}
+                    >
+                      🕊️ Send Envoy
+                    </button>
+
+                    <button
+                      disabled={wastaScore < 60}
+                      onClick={() => {
+                        if (wastaScore >= 60) {
+                          RomanAudio.playCoin();
+                          setPlayerTreasury(t => t + 150);
+                          addToast(`🏺 Trade caravan established with ${selectedProvince.site}! +150 Denarii bonus received.`, 'success');
+                        }
+                      }}
+                      style={{
+                        flex: 1, padding: '5px 8px',
+                        background: wastaScore >= 60 ? 'linear-gradient(135deg, #1b3820 0%, #0f2214 100%)' : '#14100c',
+                        border: `1px solid ${wastaScore >= 60 ? '#2ecc71' : '#3d3022'}`,
+                        borderRadius: 4,
+                        color: wastaScore >= 60 ? '#2ecc71' : '#5a4a3a',
+                        fontSize: '9.5px', fontWeight: 800,
+                        cursor: wastaScore >= 60 ? 'pointer' : 'not-allowed',
+                        fontFamily: "'Cinzel', serif"
+                      }}
+                      title={wastaScore < 60 ? 'Requires near region reach (Wasta >= 60%)' : 'Open profitable trade route'}
+                    >
+                      🏺 Open Trade
+                    </button>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, fontSize: 10 }}>
-                  <div style={{ color: '#e88080' }}>⚔️ Sword Levis ×{swordCount}</div>
-                  <div style={{ color: '#80a8e8' }}>🏹 Javelins ×{javelCount}</div>
-                </div>
-                {selectedGeneralId && !isConquered && (
-                  <div style={{ marginTop: 6, fontSize: 9, color: '#d4a34b', fontStyle: 'italic' }}>
-                    Right-click this settlement with your general selected to assault!
+
+                {/* Garrison Status */}
+                <div style={{ marginBottom: 10, borderTop: '1px solid #3d2b19', paddingTop: 8 }}>
+                  <div style={{ fontSize: '10px', color: '#d4a34b', fontWeight: 800, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
+                    🏛️ Garrison & Military Tree
+                    {!isSelfSovereign && (
+                      <span style={{ marginLeft: 8, color: isEliminated ? '#e74c3c' : provDisplayColor, fontSize: 9 }}>
+                        {isPlayerOwned ? '🦅 UNITED IN REALM' : `👑 ${rootProv.site.toUpperCase()} CONTROLLED`}
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                        {Array.from({ length: 20 }, (_, i) => (
+                          <div key={i} style={{
+                            width: 10, height: 10, borderRadius: 2,
+                            background: i < g.cohortCount
+                              ? (i < swordCount ? `rgba(${parseInt(provDisplayColor.slice(1,3),16)},${parseInt(provDisplayColor.slice(3,5),16)},${parseInt(provDisplayColor.slice(5,7),16)},0.85)` : 'rgba(60,120,220,0.9)')
+                              : 'rgba(60,60,60,0.4)',
+                            border: i < g.cohortCount ? '1px solid rgba(255,255,255,0.2)' : '1px solid rgba(60,60,60,0.3)',
+                          }} />
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 9, color: isEliminated ? '#e74c3c' : '#a08868', marginTop: 3 }}>
+                        {isEliminated
+                          ? '0 / 20 Cohorts (0 Soldiers — Garrison wiped out in assault)'
+                          : `${g.cohortCount} / 20 Cohorts (${g.totalMen.toLocaleString()} troops)`}
+                      </div>
+                    </div>
+                  </div>
+                  {!isEliminated && (
+                    <div style={{ display: 'flex', gap: 8, fontSize: 10 }}>
+                      <div style={{ color: '#e88080' }}>⚔️ Sword Levis ×{swordCount}</div>
+                      <div style={{ color: '#80a8e8' }}>🏹 Javelins ×{javelCount}</div>
+                    </div>
+                  )}
+                  {selectedGeneralId && !isPlayerOwned && (
+                    <div style={{ marginTop: 6, fontSize: 9, color: '#ffd700', fontStyle: 'italic' }}>
+                      Right-click this settlement with your general selected to declare war!
+                    </div>
+                  )}
+                  {isPlayerOwned && (
+                    <div style={{ marginTop: 8, borderTop: '1px solid #4a3820', paddingTop: 8 }}>
+                      <button
+                        onClick={() => {
+                          if (playerTreasury < 500) {
+                            addToast('Treasury insufficient! Mobilizing a provincial legion requires 500 Denarii.', 'error');
+                            return;
+                          }
+                          setPlayerTreasury(t => t - 500);
+                          const newId = `general-${Date.now()}`;
+                          const newGeneral = {
+                            id: newId,
+                            name: `Legio ${selectedProvince.site}`,
+                            role: 'Legatus Legionis',
+                            legionName: `${selectedProvince.site} Provincial Legion`,
+                            provinceId: selectedProvince.id,
+                            provinceName: selectedProvince.site,
+                            x: selectedProvince.center[0] + (Math.random() - 0.5) * 6,
+                            y: selectedProvince.center[1] + (Math.random() - 0.5) * 6,
+                            target: null,
+                            path: [],
+                            routeInfo: null,
+                            status: 'idle',
+                            distanceTraveledKm: 0,
+                            baseSpeedKmPerMin: 38,
+                            maxUnits: 20,
+                            units: [
+                              { id: `${newId}-u1`, name: `${selectedProvince.site} Veteran Cohort`, type: 'sword_levis', men: 1000, attack: 35, defense: 33, morale: 80 },
+                              { id: `${newId}-u2`, name: `${selectedProvince.site} Hastati`, type: 'sword_levis', men: 1000, attack: 33, defense: 30, morale: 75 },
+                              { id: `${newId}-u3`, name: `${selectedProvince.site} Auxiliary Archers`, type: 'javelins', men: 1000, attack: 36, defense: 22, morale: 75 },
+                            ],
+                          };
+                          setGenerals(prev => [...prev, newGeneral]);
+                          setSelectedGeneralId(newId);
+                          selectedGeneralRef.current = newId;
+                          RomanAudio.playMarch();
+                          addToast(`🦅 Legio ${selectedProvince.site} mobilized with 3,000 men (-500 Denarii)! Banner planted.`, 'success');
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '7px 10px',
+                          background: 'linear-gradient(135deg, #8a1d1d 0%, #da291c 100%)',
+                          border: '1px solid #ffd700',
+                          borderRadius: 5,
+                          color: '#ffffff',
+                          fontSize: '10.5px',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          fontFamily: "'Cinzel', serif",
+                          boxShadow: '0 2px 10px rgba(218, 41, 28, 0.4)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <span>⚔️</span>
+                        <span>Mobilize Legion at {selectedProvince.site} (-500 💰)</span>
+                      </button>
+                      <div style={{ marginTop: 5, fontSize: 9, color: '#58d68d', fontStyle: 'italic', textAlign: 'center' }}>
+                        ✓ Province is united within your realm — ready to raise troops.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
             );
           })()}
 
@@ -2534,7 +3363,7 @@ export default function CampaignMapView({ onExitToMenu }) {
           }}>
             <div><b style={{ color: '#d4a34b' }}>Total Strength:</b></div>
             <div style={{ color: '#58d68d', fontWeight: 800 }}>
-              {((selectedGeneral.units || []).length * 1000).toLocaleString()} Soldiers
+              {(selectedGeneral.units || []).reduce((sum, u) => sum + Math.max(0, u.men ?? u.count ?? 1000), 0).toLocaleString()} Soldiers
             </div>
 
             <div><b style={{ color: '#d4a34b' }}>Active Cohorts:</b></div>
@@ -2666,11 +3495,71 @@ export default function CampaignMapView({ onExitToMenu }) {
         }}
       />
 
-      {/* ── Minimap (Bottom-Right) ───────────────────────────────────────────── */}
+      {/* ── Imperial Treasury & Strategic Overview Header (Top-Center) ────────── */}
+      <div
+        data-ui-layer="true"
+        style={{
+          position: 'absolute',
+          top: 18,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 100,
+          background: 'rgba(16, 12, 8, 0.94)',
+          border: '1.5px solid #b08a3c',
+          borderRadius: 8,
+          padding: '6px 18px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.9), 0 0 15px rgba(212,172,13,0.2)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
+          fontFamily: "'Cinzel', serif",
+          fontSize: 12,
+          color: '#f5e6cc',
+          userSelect: 'none',
+          backdropFilter: 'blur(8px)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span style={{ fontSize: 18 }}>💰</span>
+          <div>
+            <div style={{ fontSize: 8.5, color: '#d4ac0d', fontWeight: 800, letterSpacing: 0.8 }}>SPQR TREASURY</div>
+            <div style={{ fontSize: 14, fontWeight: 900, color: '#ffd700' }}>
+              {playerTreasury.toLocaleString()} <span style={{ fontSize: 9.5, color: '#d4ac0d' }}>Denarii</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ width: 1, height: 26, background: '#5a3e1b' }} />
+
+        <div style={{ fontSize: 9.5, lineHeight: 1.3 }}>
+          <div>Income: <b style={{ color: '#58d68d' }}>+{playerIncome.toLocaleString()}</b> / turn</div>
+          <div>Upkeep: <b style={{ color: '#e74c3c' }}>-{playerUpkeep.toLocaleString()}</b> / turn</div>
+        </div>
+
+        <div style={{ width: 1, height: 26, background: '#5a3e1b' }} />
+
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 8.5, color: '#c8a868', fontWeight: 800 }}>NET / MINUTE</div>
+          <div style={{ fontSize: 12.5, fontWeight: 900, color: playerNet >= 0 ? '#58d68d' : '#e74c3c' }}>
+            {playerNet >= 0 ? `+${playerNet.toLocaleString()}` : playerNet.toLocaleString()}
+          </div>
+        </div>
+
+        <div style={{ width: 1, height: 26, background: '#5a3e1b' }} />
+
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 8.5, color: '#c8a868', fontWeight: 800 }}>STRATEGIC CYCLE</div>
+          <div style={{ fontSize: 11, fontWeight: 900, color: isPaused ? '#e74c3c' : '#ffd700' }}>
+            {isPaused ? '⏸ PAUSED' : `Month ${((turnNumber - 1) % 12) + 1} (${60 - Math.floor(turnProgressSec % 60)}s)`}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Minimap (Bottom-Right, Positioned above Controls) ────────────────── */}
       <canvas
         ref={minimapCanvasRef}
         width={236}
-        height={200}
+        height={175}
         onMouseDown={(e) => { minimapDraggingRef.current = true; handleMinimapPan(e.clientX, e.clientY); }}
         onMouseMove={(e) => { if (minimapDraggingRef.current) handleMinimapPan(e.clientX, e.clientY); }}
         onMouseUp={() => { minimapDraggingRef.current = false; }}
@@ -2678,10 +3567,10 @@ export default function CampaignMapView({ onExitToMenu }) {
         onClick={(e) => handleMinimapPan(e.clientX, e.clientY)}
         style={{
           position: 'absolute',
-          bottom: 18,
+          bottom: 74,
           right: 18,
           width: 236,
-          height: 200,
+          height: 175,
           zIndex: 110,
           borderRadius: 6,
           boxShadow: '0 8px 28px rgba(0,0,0,0.85), 0 0 0 1.5px #8e6c38',
@@ -2690,12 +3579,109 @@ export default function CampaignMapView({ onExitToMenu }) {
         }}
       />
 
+      {/* ── Time & Pause / Play Controls (Directly Below Minimap) ─────────────── */}
+      <div
+        data-ui-layer="true"
+        style={{
+          position: 'absolute',
+          bottom: 12,
+          right: 18,
+          width: 236,
+          zIndex: 110,
+          background: 'linear-gradient(180deg, #1c140c 0%, #0d0905 100%)',
+          border: '1.5px solid #8e6c38',
+          borderRadius: 6,
+          padding: '6px 10px',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.9)',
+          fontFamily: "'Cinzel', serif",
+          userSelect: 'none',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div style={{ fontSize: 9.5, color: '#f3e1b9', fontWeight: 800 }}>
+            🗓️ Year {218 - Math.floor(turnNumber / 12)} BC • M{((turnNumber - 1) % 12) + 1}
+          </div>
+          <div style={{ fontSize: 8.5, color: isPaused ? '#e74c3c' : '#2ecc71', fontWeight: 800 }}>
+            {isPaused ? '⏸ PAUSED' : `${60 - Math.floor(turnProgressSec % 60)}s to turn`}
+          </div>
+        </div>
+
+        {/* Turn Progress Bar */}
+        <div style={{ height: 4, background: '#0a0704', borderRadius: 2, overflow: 'hidden', marginBottom: 5, border: '1px solid #332211' }}>
+          <div style={{
+            height: '100%',
+            width: `${((turnProgressSec % 60) / 60) * 100}%`,
+            background: isPaused ? '#888' : 'linear-gradient(90deg, #d4ac0d, #f1c40f)',
+            transition: 'width 0.1s linear',
+          }} />
+        </div>
+
+        {/* Speed & Pause Buttons */}
+        <div style={{ display: 'flex', gap: 5 }}>
+          <button
+            onClick={() => handleSetSpeed('pause')}
+            style={{
+              flex: 1, padding: '4px 0',
+              background: isPaused ? 'linear-gradient(180deg, #8b1a1a 0%, #5a0e0e 100%)' : '#140e09',
+              border: isPaused ? '1px solid #ff4444' : '1px solid #5a3e1b',
+              borderRadius: 3, color: isPaused ? '#fff' : '#b08a3c',
+              fontSize: 9.5, fontWeight: 900, cursor: 'pointer', fontFamily: "'Cinzel', serif",
+            }}
+          >
+            ⏸ PAUSE
+          </button>
+          <button
+            onClick={() => handleSetSpeed('1x')}
+            style={{
+              flex: 1, padding: '4px 0',
+              background: (!isPaused && gameSpeed === '1x') ? 'linear-gradient(180deg, #1e6b2c 0%, #0e3b16 100%)' : '#140e09',
+              border: (!isPaused && gameSpeed === '1x') ? '1px solid #2ecc71' : '1px solid #5a3e1b',
+              borderRadius: 3, color: (!isPaused && gameSpeed === '1x') ? '#fff' : '#b08a3c',
+              fontSize: 9.5, fontWeight: 900, cursor: 'pointer', fontFamily: "'Cinzel', serif",
+            }}
+          >
+            ▶ PLAY
+          </button>
+          <button
+            onClick={() => handleSetSpeed('2x')}
+            style={{
+              flex: 1, padding: '4px 0',
+              background: (!isPaused && gameSpeed === '2x') ? 'linear-gradient(180deg, #b8860b 0%, #6b4e05 100%)' : '#140e09',
+              border: (!isPaused && gameSpeed === '2x') ? '1px solid #ffd700' : '1px solid #5a3e1b',
+              borderRadius: 3, color: (!isPaused && gameSpeed === '2x') ? '#fff' : '#b08a3c',
+              fontSize: 9.5, fontWeight: 900, cursor: 'pointer', fontFamily: "'Cinzel', serif",
+            }}
+          >
+            ⏩ 2X
+          </button>
+        </div>
+      </div>
+
       {/* ── Rich Tooltip ────────────────────────────────────────────────────── */}
       {tooltip && (() => {
         if (tooltip.isUnit) {
           const { unit, screenX, screenY } = tooltip;
           if (unit.isGeneral) {
             const unitCount = (unit.units || []).length;
+            const fKey = unit.faction || 'rome';
+            const fConf = FACTION_CONFIG[fKey] || FACTION_CONFIG.rome;
+            const isAi = fKey !== 'rome';
+
+            // Calculate opinion with Rome if AI
+            let opinionText = null;
+            if (isAi && diplomacyStateRef.current?.relations) {
+              const relData = diplomacyStateRef.current.relations[fKey]?.rome;
+              if (relData && (relData.areNeighbors || relData.atWar)) {
+                const opScore = calculateOpinionScore(fKey, 'rome', relData, diplomacyStateRef.current.gameTimeSec, diplomacyStateRef.current.relations);
+                const isWithin3M = (diplomacyStateRef.current.gameTimeSec - (relData.firstContactTime || 0)) < 180;
+                opinionText = {
+                  score: opScore,
+                  status: relData.atWar ? 'AT WAR' : (opScore <= -40 ? 'HOSTILE' : opScore >= 30 ? 'FRIENDLY' : 'NEUTRAL'),
+                  aversionActive: isWithin3M,
+                };
+              }
+            }
+
             return (
               <div style={{
                 position: 'absolute',
@@ -2703,7 +3689,7 @@ export default function CampaignMapView({ onExitToMenu }) {
                 top: screenY - 10,
                 zIndex: 200,
                 background: 'rgba(14,19,28,0.97)',
-                border: '1.5px solid #ffd700',
+                border: `1.5px solid ${fConf.strokeColor || '#ffd700'}`,
                 borderRadius: 7,
                 padding: '10px 14px',
                 fontFamily: "'Cinzel',serif,Georgia",
@@ -2711,26 +3697,33 @@ export default function CampaignMapView({ onExitToMenu }) {
                 fontSize: '11px',
                 pointerEvents: 'none',
                 boxShadow: '0 6px 28px rgba(0,0,0,0.85)',
-                maxWidth: 275,
+                maxWidth: 295,
                 lineHeight: 1.6,
               }}>
-                <div style={{ fontWeight: 900, fontSize: '13.5px', color: '#ffd700', marginBottom: 2 }}>
-                  🦅 {unit.name}
+                <div style={{ fontWeight: 900, fontSize: '13.5px', color: fConf.strokeColor || '#ffd700', marginBottom: 2 }}>
+                  {fConf.bannerIcon || '🦅'} {unit.name}
                 </div>
-                <div style={{ color: '#e74c3c', fontWeight: 800, fontSize: '10px', textTransform: 'uppercase', marginBottom: 4 }}>
-                  {unit.role || 'Legatus Legionis'} • {unit.status.toUpperCase()}
+                <div style={{ color: isAi ? '#f39c12' : '#e74c3c', fontWeight: 800, fontSize: '10px', textTransform: 'uppercase', marginBottom: 4 }}>
+                  {fConf.shortName} • {unit.status.toUpperCase()}
                 </div>
-                <div><b>Cohorts:</b> {unitCount} / {unit.maxUnits || 20} ({unitCount * 1000} Soldiers)</div>
-                <div><b>Speed:</b> {unit.baseSpeedKmPerMin || 38} km/month (Heavy Legion)</div>
-                <div><b>Traveled:</b> {Math.round(unit.distanceTraveledKm || 0)} km</div>
-                {unit.routeInfo && (
-                  <div style={{ color: '#ffe18f', marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3 }}>
-                    ETA: {unit.routeInfo.turnsEta} turns ({unit.routeInfo.distanceKm} km)
+                <div><b>Faction Trait:</b> <span style={{ color: '#ffd700' }}>{fConf.trait}</span></div>
+                <div><b>Forces:</b> {unitCount} Cohorts ({unitCount * 1000} Warriors)</div>
+                <div><b>Pace:</b> {unit.baseSpeedKmPerMin || 36} km/month</div>
+                {opinionText && (
+                  <div style={{ marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3, fontSize: '10px' }}>
+                    <b>Relation to Rome:</b> <span style={{ color: opinionText.status === 'AT WAR' || opinionText.score <= -40 ? '#e74c3c' : '#2ecc71' }}>
+                      {opinionText.score} ({opinionText.status})
+                    </span>
+                    {opinionText.aversionActive && (
+                      <div style={{ color: '#e67e22', fontSize: '9px' }}>⚠️ -15 Recent Contact Aversion active (month 1-3)</div>
+                    )}
                   </div>
                 )}
-                <div style={{ color: '#ffd700', marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3, fontSize: '9.5px', fontStyle: 'italic' }}>
-                  Left-click to select & raise units • Right-click to march
-                </div>
+                {!isAi && (
+                  <div style={{ color: '#ffd700', marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3, fontSize: '9.5px', fontStyle: 'italic' }}>
+                    Left-click to select & raise units • Right-click to march
+                  </div>
+                )}
               </div>
             );
           }
@@ -2773,6 +3766,18 @@ export default function CampaignMapView({ onExitToMenu }) {
 
         const { site, screenX, screenY } = tooltip;
         const style = TYPE_STYLE[site.type] || { color: '#bbb', stroke: '#444' };
+        const cqMap = conqueredRegionsRef.current;
+        const rootId = getRootController(site.id, cqMap);
+        const rootReg = regionsByIdRef.current[rootId] || site;
+        const siteReg = regionsByIdRef.current[site.id] || site;
+        const isSelfSovereign = (rootId === site.id);
+        const isPlayerOwned = (rootId === playerHomeRegion.id);
+        const siteDisplayColor = getProvinceDisplayColor(site.id, cqMap, regionsByIdRef.current);
+        const wastaRes = computeEmpireWasta(playerHomeRegion.id, site.id, cqMap, regionsData.regions);
+        const wastaScore = wastaRes.wastaScore;
+        const wastaInfo = wastaLabel(wastaScore, wastaRes.nearestProvinceName, wastaRes.hops, wastaRes.isOwnEmpire);
+        const targetEmpireName = wastaRes.targetEmpireName;
+
         return (
           <div style={{
             position: 'absolute',
@@ -2780,7 +3785,7 @@ export default function CampaignMapView({ onExitToMenu }) {
             top: screenY - 10,
             zIndex: 200,
             background: 'rgba(14,19,28,0.97)',
-            border: `1.5px solid ${style.color}`,
+            border: `1.5px solid ${isPlayerOwned ? '#ffd700' : (siteDisplayColor || style.color)}`,
             borderRadius: 7,
             padding: '10px 14px',
             fontFamily: "'Cinzel',serif,Georgia",
@@ -2788,43 +3793,136 @@ export default function CampaignMapView({ onExitToMenu }) {
             fontSize: '11px',
             pointerEvents: 'none',
             boxShadow: `0 6px 28px rgba(0,0,0,0.85), 0 0 0 1px ${style.stroke}55`,
-            maxWidth: 280,
+            maxWidth: 295,
             lineHeight: 1.65,
           }}>
-            <div style={{ fontWeight: 900, fontSize: '13.5px', color: style.color, marginBottom: 2 }}>
-              {site.site}
+            <div style={{ fontWeight: 900, fontSize: '13.5px', color: isPlayerOwned ? '#ffd700' : (siteDisplayColor || style.color), marginBottom: 2 }}>
+              {isPlayerOwned ? '🦅 ' : (!isSelfSovereign ? '👑 ' : '')}{site.site}
             </div>
-            <div style={{ fontSize: '10px', color: '#a08868', marginBottom: 6 }}>
+            <div style={{ fontSize: '10px', color: '#a08868', marginBottom: 4 }}>
               {site.modern}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-              <div style={{
-                width: 9, height: 9, borderRadius: '50%',
-                backgroundColor: style.color,
-                border: `1.5px solid ${style.stroke}`,
-                flexShrink: 0,
-              }}/>
-              <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#ddc898',
-                             letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-                {site.type}
+              <span style={{ fontSize: '10px', fontWeight: 800, color: siteDisplayColor || '#ddc898', textTransform: 'uppercase' }}>
+                {targetEmpireName}
               </span>
             </div>
-            {site.people && (
-              <div style={{ fontSize: '10px', color: '#e8c988', marginBottom: 4 }}>
-                <b>Polity:</b> {site.people}
+            <div><b>Classification:</b> {site.type} (Weight: {site.weight || 4}/10)</div>
+            <div><b>Province Yield:</b> <span style={{ color: '#ffd700' }}>+{(site.weight || 4) * 100} Denarii/turn</span></div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
+              <b>Wasta:</b>
+              <span style={{ color: wastaInfo.color, fontWeight: 800, fontSize: '10px' }}>
+                {wastaScore}% ({wastaInfo.label} via {wastaRes.nearestProvinceName})
+              </span>
+            </div>
+            <div style={{ color: '#ffd700', marginTop: 4, borderTop: '1px solid #4a3820', paddingTop: 3, fontSize: '9.5px', fontStyle: 'italic' }}>
+              Left-click to inspect • Right-click with army to declare war & march
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* War Declaration Prompt Div */}
+      {warDeclarationPrompt && (() => {
+        const cqMap = conqueredRegionsRef.current;
+        const promptWastaRes = computeEmpireWasta(playerHomeRegion.id, warDeclarationPrompt.site.id, cqMap, regionsData.regions);
+        const promptWasta = promptWastaRes.wastaScore;
+        const promptWastaInfo = wastaLabel(promptWasta, promptWastaRes.nearestProvinceName, promptWastaRes.hops, promptWastaRes.isOwnEmpire);
+        const targetEmpireName = promptWastaRes.targetEmpireName;
+
+        return (
+          <div
+            data-ui-layer="true"
+            style={{
+              position: 'fixed',
+              left: Math.min(window.innerWidth - 300, Math.max(20, warDeclarationPrompt.screenX - 140)),
+              top: Math.min(window.innerHeight - 240, Math.max(20, warDeclarationPrompt.screenY - 110)),
+              zIndex: 600,
+              background: 'linear-gradient(160deg, #20130b 0%, #0d0805 100%)',
+              border: '2px solid #b08a3c',
+              borderRadius: 8,
+              padding: '14px 18px',
+              width: 295,
+              boxShadow: '0 0 35px rgba(255, 60, 0, 0.4), 0 10px 40px rgba(0,0,0,0.95)',
+              fontFamily: "'Cinzel', serif",
+              userSelect: 'none',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, borderBottom: '1px solid #5a4020', paddingBottom: 6 }}>
+              <div style={{ fontSize: 11, color: '#e74c3c', fontWeight: 900, letterSpacing: 2 }}>
+                ⚔️ WAR DECLARATION
               </div>
-            )}
+              <button
+                onClick={() => setWarDeclarationPrompt(null)}
+                style={{
+                  background: 'transparent', border: 'none', color: '#a08060',
+                  cursor: 'pointer', fontSize: 14, fontWeight: 700
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ fontSize: 15, fontWeight: 900, color: '#fff', marginBottom: 2 }}>
+              {warDeclarationPrompt.site.site}
+            </div>
+            <div style={{ fontSize: 10.5, color: '#c8b498', marginBottom: 8, lineHeight: 1.4 }}>
+              <div><b>Allegiance:</b> <span style={{ color: '#ffd700' }}>{targetEmpireName}</span></div>
+              <div><b>Classification:</b> {warDeclarationPrompt.site.type}</div>
+              <div style={{ color: '#e8c37d', marginTop: 2 }}>
+                <b>{warDeclarationPrompt.general.name}</b> will march to assault this settlement.
+              </div>
+            </div>
+
+            {/* Wasta Meter in War Declaration */}
             <div style={{
-              display: 'grid', gridTemplateColumns: '1fr 1fr',
-              gap: '3px 14px', fontSize: '10.5px', color: '#c8b090',
-              borderTop: `1px solid ${style.color}44`, paddingTop: 5,
+              background: 'rgba(0,0,0,0.6)', border: `1px solid ${promptWastaInfo.color}55`,
+              borderRadius: 5, padding: '7px 9px', marginBottom: 12,
             }}>
-              <div><b style={{ color: '#e8c988' }}>Region:</b></div>
-              <div style={{ color: '#f0ddb8' }}>{site.region}</div>
-              <div><b style={{ color: '#e8c988' }}>Weight:</b></div>
-              <div style={{ color: '#f0ddb8' }}>
-                {'★'.repeat(Math.min(site.weight, 5))} {site.weight}/10
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9.5px', marginBottom: 4 }}>
+                <span style={{ color: '#d4ad82', fontWeight: 800 }}>DIPLOMATIC WASTA:</span>
+                <span style={{ color: promptWastaInfo.color, fontWeight: 900 }}>{promptWasta}% • {promptWastaInfo.label.toUpperCase()}</span>
               </div>
+              <div style={{ fontSize: '9px', color: '#ffd700', marginBottom: 4 }}>
+                Measured from closest province: <b>{promptWastaRes.nearestProvinceName}</b> ({promptWastaRes.hops} border hop{promptWastaRes.hops === 1 ? '' : 's'})
+              </div>
+              <div style={{ width: '100%', height: 5, background: '#221610', borderRadius: 3, overflow: 'hidden', marginBottom: 4 }}>
+                <div style={{ width: `${promptWasta}%`, height: '100%', background: promptWastaInfo.color, borderRadius: 3 }} />
+              </div>
+              <div style={{ fontSize: '9px', color: '#a89880', fontStyle: 'italic' }}>
+                {promptWasta >= 100
+                  ? `✓ Direct neighbour to ${promptWastaRes.nearestProvinceName}: immediate frontier assault feasible.`
+                  : promptWasta >= 60
+                  ? `Near frontier (${promptWastaRes.hops} hops from ${promptWastaRes.nearestProvinceName}): supply train will take standard route.`
+                  : `⚠️ Distant frontier (${promptWastaRes.hops} hops from ${promptWastaRes.nearestProvinceName}): expedition through foreign borders required.`}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setWarDeclarationPrompt(null)}
+                style={{
+                  padding: '6px 12px', background: 'rgba(50,40,30,0.8)',
+                  border: '1px solid #5a4020', borderRadius: 4, color: '#a08060',
+                  fontSize: 10.5, cursor: 'pointer', fontFamily: "'Cinzel', serif"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleGoForWar(warDeclarationPrompt.general, warDeclarationPrompt.site)}
+                style={{
+                  padding: '7px 18px',
+                  background: 'linear-gradient(135deg, #a61c1c 0%, #e74c3c 100%)',
+                  border: '1px solid #ffd700', borderRadius: 5, color: '#fff',
+                  fontWeight: 900, fontSize: 11.5, cursor: 'pointer',
+                  letterSpacing: 1, fontFamily: "'Cinzel', serif",
+                  boxShadow: '0 2px 10px rgba(231,76,60,0.5)'
+                }}
+              >
+                ⚔️ GO FOR WAR
+              </button>
             </div>
           </div>
         );
@@ -2837,8 +3935,10 @@ export default function CampaignMapView({ onExitToMenu }) {
           defSite={battleModal.defSite}
           defWeight={battleModal.defWeight}
           elevation={battleModal.elevation}
+          existingGarrison={battleModal.existingGarrison}
           onClose={() => setBattleModal(null)}
           onVictory={handleBattleVictory}
+          onDefeat={handleBattleDefeat}
         />
       )}
     </div>

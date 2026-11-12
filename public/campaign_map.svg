@@ -97,6 +97,8 @@
   <!-- ======================================================= -->
     <!-- 2b. VINTAGE PAPER MAP TEXTURE & COLORED PROVINCES (<g id="vintage-paper">) -->
     <!-- 2b. VINTAGE PAPER MAP TEXTURE & COLORED PROVINCES (<g id="vintage-paper">) -->
+    <!-- 2b. VINTAGE PAPER MAP TEXTURE & COLORED PROVINCES (<g id="vintage-paper">) -->
+    <!-- 2b. VINTAGE PAPER MAP TEXTURE & COLORED PROVINCES (<g id="vintage-paper">) -->
   <g id="vintage-paper" clip-path="url(#land-clip)" style="display: none;">
     <!-- Base warm parchment undercoat -->
     <rect width="2600" height="2200" fill="#ebdcb9" />
@@ -477,6 +479,8 @@
       <path id="reg-397" class="province-paper-poly" data-id="397" data-site="Gerasa" d="M 1647.5 1364.4 L 1647.2 1371.5 L 1642.5 1374.4 L 1644.4 1382.5 L 1657.5 1370.6 L 1651.5 1362.8 L 1647.5 1364.4 Z" fill="#f1c40f" fill-opacity="0.48" />
       <path id="reg-398" class="province-paper-poly" data-id="398" data-site="Philadelphia" d="M 1647.5 1379.4 L 1647.5 1395.6 L 1642.5 1399.4 L 1642.8 1406.5 L 1647.5 1410.6 L 1642.8 1413.5 L 1642.5 1420.6 L 1651.5 1422.8 L 1653.5 1427.2 L 1675.6 1427.5 L 1679.4 1432.5 L 1684.4 1427.5 L 1705.6 1427.5 L 1713.5 1417.8 L 1717.2 1416.5 L 1717.8 1408.5 L 1722.2 1406.5 L 1722.2 1403.5 L 1712.8 1396.5 L 1712.5 1389.4 L 1707.8 1386.5 L 1707.2 1378.5 L 1698.5 1377.2 L 1696.5 1372.8 L 1684.4 1372.5 L 1681.5 1377.2 L 1674.4 1377.5 L 1671.5 1372.8 L 1662.8 1371.5 L 1661.5 1362.8 L 1654.4 1362.5 L 1652.5 1365.6 L 1657.2 1368.5 L 1657.2 1371.5 L 1647.5 1379.4 Z" fill="#dc7633" fill-opacity="0.48" />
     </g>
+  </g>
+  </g>
   </g>
   </g>
 

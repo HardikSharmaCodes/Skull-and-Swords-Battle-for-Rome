@@ -34,7 +34,7 @@ export function getElevationAt(x, y) {
 }
 
 export function getTerrainSpeedMultiplier(elevation) {
-  if (elevation < 0) return 0.0; // Sea (impassable for land units)
+  if (elevation < 0) return 1.0; // Water traversal: same speed as open plains (do not slow down)
   if (elevation <= 300) return 1.0; // Plains / Coastal plains (fastest)
   if (elevation <= 700) return 0.70; // Low hills
   if (elevation <= 1300) return 0.45; // Highlands
@@ -218,12 +218,14 @@ export function calculatePath(startX, startY, targetX, targetY, pathMode = 'terr
       if (closed[nIdx]) continue;
 
       const nElev = ELEVATION_GRID[nIdx];
-      // Land units cannot traverse open sea
-      if (nElev < -15) continue;
-
       let stepCost = dists[d];
 
-      if (pathMode === 'terrain') {
+      if (nElev < 0) {
+        // Water is strictly avoided by scouts and armies:
+        // Heavy traversal penalty (50x) ensures units always choose land routes around bays, coasts, and seas.
+        // It only permits water traversal when crossing to an island where no land connection exists.
+        stepCost *= 50.0;
+      } else if (pathMode === 'terrain') {
         // High terrain penalty: mountains are severely avoided, plains preferred!
         let elevPenalty = 1.0;
         if (nElev > 1800) elevPenalty = 7.5;
@@ -427,6 +429,55 @@ export class RomanAudio {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(f, now + t);
         gain.gain.setValueAtTime(0.10, now + t);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + t + d);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + t);
+        osc.stop(now + t + d + 0.02);
+      });
+    } catch {}
+  }
+
+  // Silver / Gold Denarii Coin Clink Sound
+  static playCoin() {
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    try {
+      const now = ctx.currentTime;
+      [
+        { f: 1975.53, t: 0, d: 0.12 }, // B6
+        { f: 2349.32, t: 0.06, d: 0.25 }, // D7
+      ].forEach(({ f, t, d }) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(f, now + t);
+        gain.gain.setValueAtTime(0.08, now + t);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + t + d);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + t);
+        osc.stop(now + t + d + 0.02);
+      });
+    } catch {}
+  }
+
+  // Ominous War Horn / Carnyx
+  static playWar() {
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    try {
+      const now = ctx.currentTime;
+      [
+        { f: 130.81, t: 0, d: 0.4 },  // C3
+        { f: 146.83, t: 0.3, d: 0.6 }, // D3
+        { f: 110.00, t: 0.8, d: 0.9 }  // A2
+      ].forEach(({ f, t, d }) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(f, now + t);
+        gain.gain.setValueAtTime(0.18, now + t);
         gain.gain.exponentialRampToValueAtTime(0.001, now + t + d);
         osc.connect(gain);
         gain.connect(ctx.destination);

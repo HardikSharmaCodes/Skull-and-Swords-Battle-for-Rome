@@ -43,44 +43,39 @@ export function generateGarrison(weight) {
 export const BATTLE_STANCES = {
   balanced: {
     id: 'balanced',
-    name: 'Balanced Stance',
+    name: 'Balanced',
     icon: '⚖️',
-    motto: 'Disciplined Cohort Lines',
-    badge: 'Standard Doctrine',
-    desc: 'Disciplined century lines, pilum volley followed by gladius rotation. Standard casualty exchange and reliable battle efficiency.',
+    badge: 'Standard',
+    desc: 'Disciplined cohort lines with standard rotation.',
     atkMult: 1.0,
     defMult: 1.0,
     atkLossMult: 1.0,
     defLossMult: 1.0,
     color: '#d4a34b',
-    border: '#a67c2e',
   },
   offensive: {
     id: 'offensive',
-    name: 'Offensive Stance',
+    name: 'Offensive',
     icon: '⚔️',
-    motto: 'Frontal Assault & Battering Rams',
-    badge: 'High Aggression',
-    desc: 'Massed gladius charges aiming for quick breach. Inflicts devastating garrison losses (+35%), but exposes Roman cohorts to fierce counter-attacks (+25% Roman losses).',
+    badge: 'Assault',
+    desc: 'Frontal breach. +35% enemy losses, +25% Roman losses.',
     atkMult: 1.25,
     defMult: 0.85,
     atkLossMult: 1.25,
     defLossMult: 1.35,
     color: '#e74c3c',
-    border: '#c0392b',
   },
   defensive: {
     id: 'defensive',
-    name: 'Defensive Stance',
+    name: 'Defensive',
     icon: '🛡️',
-    motto: 'Testudo Formation & Sapping',
-    desc: 'Armored testudo shield walls advancing steadily under ballista cover. Drastically reduces Roman casualties (-35%), but inflicts lower shock on defenders (-15% garrison losses).',
+    badge: 'Testudo',
+    desc: 'Shield wall formation. -35% Roman casualties.',
     atkMult: 0.85,
     defMult: 1.30,
     atkLossMult: 0.65,
     defLossMult: 0.85,
     color: '#3498db',
-    border: '#2980b9',
   },
 };
 
@@ -98,7 +93,7 @@ export function computeBattle(attackerGeneral, defSite, defWeight, elevation, st
 
   for (const u of atkCohorts) {
     const curMen = Math.max(0, u.men ?? u.count ?? 1000);
-    const quality = Math.max(0.01, curMen / 1000); // 1.0 = full health, 0.5 = 50% strength
+    const quality = Math.max(0.01, curMen / 1000);
     totalAtkMen += curMen;
     weightedAtkAttack += (u.attack || 30) * quality;
     weightedAtkDefense += (u.defense || 25) * quality;
@@ -136,7 +131,7 @@ export function computeBattle(attackerGeneral, defSite, defWeight, elevation, st
   const elevBonus = Math.min(35, Math.max(0, Math.round(elevation / 25)));
   const fortBonus = getFortBonus(defSite.type);
 
-  // Scores
+  // Combat power scores
   const atkScore = (totalAtkMen / 1000) * avgAtkAttack * (avgAtkMorale / 100) * 1.8;
   const defScore = Math.max(0.1, (totalDefMen / 1000) * avgDefDefense * (avgDefMorale / 100)
     * (1 + elevBonus / 100)
@@ -166,17 +161,206 @@ export function computeBattle(attackerGeneral, defSite, defWeight, elevation, st
   };
 }
 
+// ─── Unequal Casualties Distribution with Random Engagement Factor ──────────
+export function distributeUnequalCasualties(units, totalLosses, stanceKey) {
+  if (!units || units.length === 0 || totalLosses <= 0) {
+    return { updatedUnits: units, destroyedCount: 0 };
+  }
+
+  // Assign random engagement weights based on unit role and battle chaos
+  const weights = units.map((u, idx) => {
+    const curMen = Math.max(0, u.men ?? u.count ?? 1000);
+    if (curMen === 0) return 0;
+
+    const type = (u.type || u.typeId || '').toLowerCase();
+    const isMelee = type.includes('sword') || type.includes('melee');
+    const isRanged = type.includes('javelin') || type.includes('ranged');
+
+    let base = 1.0;
+    if (isMelee) base = 1.35;
+    else if (isRanged) base = stanceKey === 'offensive' ? 1.15 : stanceKey === 'defensive' ? 0.55 : 0.85;
+
+    // Random engagement factor (0.3x to 2.2x variance)
+    const randomFactor = 0.3 + Math.random() * 1.9;
+    // Frontline cohort bias
+    const vanguardBias = idx < Math.ceil(units.length * 0.45) ? 1.25 : 0.85;
+
+    return base * randomFactor * vanguardBias;
+  });
+
+  const totalWeight = weights.reduce((s, w) => s + w, 0) || 1;
+  let distributed = 0;
+  const losses = units.map((u, i) => {
+    const curMen = Math.max(0, u.men ?? u.count ?? 1000);
+    const loss = Math.min(curMen, Math.round(totalLosses * (weights[i] / totalWeight)));
+    distributed += loss;
+    return loss;
+  });
+
+  // Distribute rounding remainder
+  let remainder = totalLosses - distributed;
+  while (remainder > 0) {
+    let bestIdx = -1;
+    let maxRemaining = 0;
+    for (let i = 0; i < units.length; i++) {
+      const curMen = Math.max(0, units[i].men ?? units[i].count ?? 1000);
+      const rem = curMen - losses[i];
+      if (rem > maxRemaining) {
+        maxRemaining = rem;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx === -1 || maxRemaining <= 0) break;
+    losses[bestIdx] += 1;
+    remainder--;
+  }
+
+  let destroyedCount = 0;
+  const updatedUnits = [];
+
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    const curMen = Math.max(0, u.men ?? u.count ?? 1000);
+    const newMen = curMen - losses[i];
+    if (newMen > 0) {
+      updatedUnits.push({
+        ...u,
+        men: newMen,
+        count: newMen,
+      });
+    } else {
+      destroyedCount++;
+    }
+  }
+
+  return { updatedUnits, destroyedCount };
+}
+
+// ─── Field Battle Calculation (Army vs Army in Open Field) ─────────────────
+export function computeFieldBattle(atkGeneral, defGeneral, elevation = 0, stanceKey = 'balanced') {
+  const stance = BATTLE_STANCES[stanceKey] || BATTLE_STANCES.balanced;
+
+  // 1. Attacker army analysis taking unit quality into account
+  const atkCohorts = atkGeneral.units || [];
+  const atkCount = atkCohorts.length;
+  let totalAtkMen = 0;
+  let weightedAtkAttack = 0;
+  let weightedAtkDefense = 0;
+  let weightedAtkMorale = 0;
+
+  for (const u of atkCohorts) {
+    const curMen = Math.max(0, u.men ?? u.count ?? 1000);
+    const quality = Math.max(0.01, curMen / 1000);
+    totalAtkMen += curMen;
+    weightedAtkAttack += (u.attack || 30) * quality;
+    weightedAtkDefense += (u.defense || 25) * quality;
+    weightedAtkMorale += (u.morale || 65) * (0.6 + 0.4 * quality);
+  }
+
+  const avgAtkAttack = (atkCount > 0 ? weightedAtkAttack / atkCount : 25) * stance.atkMult;
+  const avgAtkDefense = (atkCount > 0 ? weightedAtkDefense / atkCount : 20) * stance.defMult;
+  const avgAtkMorale = atkCount > 0 ? weightedAtkMorale / atkCount : 60;
+
+  // 2. Defender army analysis
+  const defCohorts = defGeneral.units || [];
+  const defCount = defCohorts.length;
+  let totalDefMen = 0;
+  let weightedDefAttack = 0;
+  let weightedDefDefense = 0;
+  let weightedDefMorale = 0;
+
+  for (const du of defCohorts) {
+    const curMen = Math.max(0, du.men ?? du.count ?? 1000);
+    const quality = Math.max(0.01, curMen / 1000);
+    totalDefMen += curMen;
+    weightedDefAttack += (du.attack || 28) * quality;
+    weightedDefDefense += (du.defense || 24) * quality;
+    weightedDefMorale += (du.morale || 65) * (0.6 + 0.4 * quality);
+  }
+
+  const avgDefAttack = defCount > 0 ? weightedDefAttack / defCount : 25;
+  const avgDefDefense = defCount > 0 ? weightedDefDefense / defCount : 22;
+  const avgDefMorale = defCount > 0 ? weightedDefMorale / defCount : 60;
+
+  // Field elevation advantage (holding the high ground)
+  const elevBonus = Math.min(25, Math.max(0, Math.round(elevation / 40)));
+
+  const atkScore = (totalAtkMen / 1000) * avgAtkAttack * (avgAtkMorale / 100) * 1.5;
+  const defScore = Math.max(0.1, (totalDefMen / 1000) * avgDefDefense * (avgDefMorale / 100) * (1 + elevBonus / 100) * 1.5);
+
+  const totalScore = atkScore + defScore;
+  const atkWinChance = Math.min(0.97, Math.max(0.03, atkScore / totalScore));
+
+  return {
+    stance,
+    atkMen: totalAtkMen,
+    defMen: totalDefMen,
+    atkScore,
+    defScore,
+    atkWinChance,
+  };
+}
+
+// ─── Field Battle Simulation Outcome with Total Force Deletion Chance ───────
+export function simulateFieldBattleOutcome(atkGeneral, defGeneral, elevation = 0, stanceKey = 'balanced') {
+  const calc = computeFieldBattle(atkGeneral, defGeneral, elevation, stanceKey);
+  const atkWins = Math.random() < calc.atkWinChance;
+
+  const winner = atkWins ? atkGeneral : defGeneral;
+  const loser = atkWins ? defGeneral : atkGeneral;
+  const winnerMen = atkWins ? calc.atkMen : calc.defMen;
+  const loserMen = atkWins ? calc.defMen : calc.atkMen;
+
+  // Ratio of force disparity
+  const powerRatio = atkWins
+    ? (calc.atkScore / Math.max(0.1, calc.defScore))
+    : (calc.defScore / Math.max(0.1, calc.atkScore));
+
+  // Casualties
+  // Loser suffers 50% to 85% casualty rate
+  const loserCasualtyPct = Math.min(0.96, 0.50 + Math.random() * 0.35 + (powerRatio > 1.5 ? 0.12 : 0));
+  // Winner suffers 15% to 35% casualty rate
+  const winnerCasualtyPct = Math.max(0.06, Math.min(0.40, (0.25 - (powerRatio - 1) * 0.08) * (0.8 + Math.random() * 0.4)));
+
+  const loserLosses = Math.min(loserMen, Math.round(loserMen * loserCasualtyPct));
+  const winnerLosses = Math.min(winnerMen, Math.round(winnerMen * winnerCasualtyPct));
+
+  const loserCas = distributeUnequalCasualties(loser.units || [], loserLosses, 'balanced');
+  const winnerCas = distributeUnequalCasualties(winner.units || [], winnerLosses, 'balanced');
+
+  // Total force loss / unit deletion chance:
+  // User Requirement: "The attacker or the defender has a chance of loosing it's entire force in a feild battle which causes the unit to be deleted"
+  // Catastrophic rout, envelopment, or all cohorts destroyed
+  const annihilationRoll = Math.random();
+  const annihilationThreshold = powerRatio >= 2.0 ? 0.65 : powerRatio >= 1.5 ? 0.48 : 0.35;
+  const isTotalAnnihilation = (annihilationRoll < annihilationThreshold) || (loserCas.updatedUnits.length === 0);
+
+  const finalLoserUnits = isTotalAnnihilation ? [] : loserCas.updatedUnits;
+  const finalWinnerUnits = winnerCas.updatedUnits;
+
+  return {
+    atkWins,
+    winner,
+    loser,
+    winnerUnits: finalWinnerUnits,
+    loserUnits: finalLoserUnits,
+    winnerLosses,
+    loserLosses,
+    isTotalAnnihilation,
+    isLoserDeleted: isTotalAnnihilation || finalLoserUnits.length === 0,
+    isWinnerDeleted: finalWinnerUnits.length === 0,
+    powerRatio,
+  };
+}
+
 const CLASH_MSGS = [
   '⚔️ Legions advance under a storm of javelins!',
-  '🏹 Arrows darken the sky as skirmishers loose their volleys!',
-  '🛡️ The testudo formation absorbs defending missile salvos!',
-  '🔥 Battering rams thunder against the fortified gatehouse!',
-  '⚔️ Roman gladii cut through the defending front rank!',
-  '🚨 Garrison commanders rally at the inner ramparts!',
-  '🦅 The Aquila standard surges forward through the breach!',
-  '💥 Gate shattered — legionary cohorts flood into the forum!',
-  '🛡️ Defenders begin to break under coordinated cohort assault!',
-  '🦅 ROME ETERNAL — the battle reaches its decisive climax!',
+  '🏹 Volleys darken the sky as skirmishers engage!',
+  '🛡️ Testudo wall absorbs missile fire at the gate!',
+  '🔥 Battering rams breach the fortified gatehouse!',
+  '⚔️ Roman gladii clash with defenders in the forum!',
+  '🦅 Aquila standard surges forward through the breach!',
+  '💥 Roman victory confirmed — city secured!',
 ];
 
 export default function BattleModal({
@@ -211,18 +395,18 @@ export default function BattleModal({
 
     intervalRef.current = setInterval(function() {
       tick++;
-      prog = Math.min(100, prog + 7 + Math.random() * 8);
+      prog = Math.min(100, prog + 9 + Math.random() * 9);
       setProgress(Math.floor(prog));
       if (tick < CLASH_MSGS.length) {
-        setClashLines(function(prev) { return [...prev.slice(-5), CLASH_MSGS[tick]]; });
+        setClashLines(function(prev) { return [...prev.slice(-3), CLASH_MSGS[tick]]; });
       }
       if (prog >= 100) {
         clearInterval(intervalRef.current);
         const atkWins = Math.random() * 100 < stats.atkWinChance;
 
-        // Base casualty rates modified by tactical stance
-        let baseAtkPct = atkWins ? (0.08 + Math.random() * 0.12) : (0.28 + Math.random() * 0.30);
-        let baseDefPct = atkWins ? (0.65 + Math.random() * 0.35) : (0.18 + Math.random() * 0.22);
+        // Base casualty rates modified by stance
+        let baseAtkPct = atkWins ? (0.07 + Math.random() * 0.12) : (0.28 + Math.random() * 0.30);
+        let baseDefPct = atkWins ? (0.68 + Math.random() * 0.32) : (0.18 + Math.random() * 0.22);
 
         const stance = BATTLE_STANCES[stanceKey];
         const computedAtkLosses = Math.min(stats.atkMen, Math.round(stats.atkMen * baseAtkPct * stance.atkLossMult));
@@ -231,27 +415,10 @@ export default function BattleModal({
         setAtkCasualties(computedAtkLosses);
         setDefCasualties(computedDefLosses);
 
-        // ── Apply real losses to Attacker Units and remove units that hit 0 health ──
-        const remainingLossPerCohort = Math.round(computedAtkLosses / Math.max(1, (attacker.units || []).length));
-        let destroyed = 0;
-        const newAtkUnits = [];
-
-        for (const u of (attacker.units || [])) {
-          const cur = Math.max(0, u.men ?? u.count ?? 1000);
-          const newMen = cur - remainingLossPerCohort;
-          if (newMen > 0) {
-            newAtkUnits.push({
-              ...u,
-              men: newMen,
-              count: newMen,
-            });
-          } else {
-            destroyed++;
-          }
-        }
-
-        setSurvivingUnits(newAtkUnits);
-        setUnitsDestroyedCount(destroyed);
+        // ── Apply Unequal Casualties with random engagement factor ──
+        const atkResult = distributeUnequalCasualties(attacker.units || [], computedAtkLosses, stanceKey);
+        setSurvivingUnits(atkResult.updatedUnits);
+        setUnitsDestroyedCount(atkResult.destroyedCount);
 
         if (atkWins) {
           setWinner('attacker');
@@ -260,7 +427,7 @@ export default function BattleModal({
         }
         setPhase('result');
       }
-    }, 280);
+    }, 240);
   }
 
   useEffect(function() {
@@ -269,334 +436,270 @@ export default function BattleModal({
     };
   }, []);
 
-  const fortBonus = stats.fortBonus;
-
   return (
     <div
       data-ui-layer="true"
       style={{
         position: 'fixed',
-        inset: 0,
+        bottom: 22,
+        left: '50%',
+        transform: 'translateX(-50%)',
         zIndex: 650,
-        background: 'rgba(0,0,0,0.85)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        width: 490,
+        maxWidth: '95vw',
+        background: 'linear-gradient(180deg, #18120c 0%, #0d0905 100%)',
+        border: '2px solid #b08a3c',
+        borderRadius: 8,
+        boxShadow: '0 0 45px rgba(0,0,0,0.95), 0 0 25px rgba(212,163,75,0.35)',
         fontFamily: "'Cinzel', serif",
+        userSelect: 'none',
+        overflow: 'hidden',
       }}
-      onClick={function(e) { e.stopPropagation(); }}
+      onClick={(e) => e.stopPropagation()}
     >
-      <div
-        style={{
-          background: 'linear-gradient(160deg,#0d1117 0%,#1a0f07 50%,#0d1117 100%)',
-          border: '2px solid #b08a3c',
-          borderRadius: 12,
-          width: 720,
-          maxWidth: '96vw',
-          maxHeight: '92vh',
-          overflowY: 'auto',
-          boxShadow: '0 0 60px rgba(255,100,0,0.25), 0 20px 80px rgba(0,0,0,0.9)',
-          position: 'relative',
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            background: 'linear-gradient(135deg,#8b1a1a 0%,#3d0000 50%,#8b1a1a 100%)',
-            borderBottom: '2px solid #b08a3c',
-            padding: '16px 22px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            borderRadius: '10px 10px 0 0',
-          }}
-        >
-          <div>
-            <div style={{ fontSize: 11, color: '#d4a34b', letterSpacing: 3, textTransform: 'uppercase' }}>
-              ⚔️ BATTLE OF {defSite.site.toUpperCase()}
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 900, color: '#fff', marginTop: 2 }}>
-              Assault on the Settlement Center
-            </div>
+      {/* ── Top Balance-of-Power Bar & Header matching Reference Image ── */}
+      <div style={{ background: '#0a0704', padding: '6px 12px', borderBottom: '1.5px solid #b08a3c' }}>
+        {/* Yellow / Red Balance of Power Bar */}
+        <div style={{
+          height: 7,
+          background: '#801515',
+          borderRadius: 2,
+          overflow: 'hidden',
+          display: 'flex',
+          border: '1px solid #000',
+          marginBottom: 4,
+        }}>
+          <div style={{
+            width: `${stats.atkWinChance}%`,
+            background: 'linear-gradient(90deg, #ffd700, #ffb300)',
+            boxShadow: '0 0 6px rgba(255,215,0,0.8)',
+            transition: 'width 0.25s ease',
+          }} />
+        </div>
+
+        {/* Title row */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 13, color: '#ffd700' }}>⚔️</span>
+            <span style={{ fontSize: 12, fontWeight: 900, color: '#ffe18f', letterSpacing: 1.5, textTransform: 'uppercase' }}>
+              BATTLE DEPLOYMENT: {defSite.site}
+            </span>
           </div>
           <button
             onClick={onClose}
             style={{
               background: 'transparent',
-              border: '1px solid #6b4020',
+              border: 'none',
               color: '#a08060',
-              fontSize: 18,
               cursor: 'pointer',
-              width: 32,
-              height: 32,
-              borderRadius: 4,
+              fontSize: 14,
+              fontWeight: 800,
             }}
           >
             ✕
           </button>
         </div>
+      </div>
 
-        <div style={{ padding: '18px 22px' }}>
+      <div style={{ padding: '10px 14px' }}>
 
-          {/* Force Comparison */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, marginBottom: 16, alignItems: 'stretch' }}>
-            {/* Roman Legion */}
-            <div style={{ background: 'rgba(30,80,30,0.25)', border: '1.5px solid #2a7a2a', borderRadius: 8, padding: '12px 14px' }}>
-              <div style={{ fontSize: 10, color: '#5dba5d', letterSpacing: 2, marginBottom: 6, textTransform: 'uppercase' }}>
-                🦅 Roman Legion
-              </div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: '#fff', marginBottom: 8 }}>{attacker.name}</div>
-              <div style={{ fontSize: 11, color: '#b8d4b8', lineHeight: 1.7 }}>
-                <div>⚔️ Active Cohorts: <b style={{ color: '#fff' }}>{stats.atkCohorts} / 20</b></div>
-                <div>👥 Men (Unit Quality): <b style={{ color: '#fff' }}>{stats.atkMen.toLocaleString()} troops</b></div>
-                <div>🗡️ Effective Attack: <b style={{ color: '#fff' }}>{stats.atkAttack}</b></div>
-                <div>🛡️ Effective Defense: <b style={{ color: '#fff' }}>{stats.atkDefense}</b></div>
-                <div>💪 Average Morale: <b style={{ color: '#fff' }}>{stats.atkMorale}%</b></div>
-              </div>
-              <div style={{ marginTop: 8, padding: '5px 8px', background: 'rgba(30,100,30,0.4)', borderRadius: 4, fontSize: 10, color: '#7dda7d' }}>
-                Combat Power: <b>{stats.atkScore}</b>
-              </div>
+        {/* Compact Forces Comparison */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+          {/* Attacker */}
+          <div style={{ background: 'rgba(25, 45, 20, 0.5)', border: '1px solid #2a5a22', borderRadius: 4, padding: '5px 8px' }}>
+            <div style={{ fontSize: 9, color: '#5dba5d', fontWeight: 800 }}>🦅 {attacker.name}</div>
+            <div style={{ fontSize: 13, fontWeight: 900, color: '#fff' }}>
+              {stats.atkMen.toLocaleString()} <span style={{ fontSize: 9.5, color: '#b8d4b8' }}>({stats.atkCohorts} coh)</span>
             </div>
-
-            {/* VS Emblem */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 6px' }}>
-              <div style={{ fontSize: 24, color: '#d4a34b', fontWeight: 900 }}>VS</div>
-              {phase !== 'pre' && (
-                <div style={{ marginTop: 12, width: 40, height: 40, borderRadius: '50%', background: 'radial-gradient(circle,#ff4444,#880000)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, boxShadow: '0 0 15px rgba(255,50,50,0.6)' }}>
-                  ⚔️
-                </div>
-              )}
-            </div>
-
-            {/* Garrison */}
-            <div style={{ background: 'rgba(80,30,30,0.25)', border: '1.5px solid #7a2a2a', borderRadius: 8, padding: '12px 14px' }}>
-              <div style={{ fontSize: 10, color: '#ba5d5d', letterSpacing: 2, marginBottom: 6, textTransform: 'uppercase' }}>
-                🏛️ Garrison Defenders
-              </div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: '#fff', marginBottom: 8 }}>{defSite.site}</div>
-              <div style={{ fontSize: 11, color: '#d4b8b8', lineHeight: 1.7 }}>
-                <div>⚔️ Cohorts: <b style={{ color: '#fff' }}>{stats.defCohorts} / 20</b></div>
-                <div>👥 Defenders: <b style={{ color: '#fff' }}>{stats.defMen.toLocaleString()} troops</b></div>
-                <div>🗡️ Defense Attack: <b style={{ color: '#fff' }}>{stats.defAttack}</b></div>
-                <div>🛡️ Base Defense: <b style={{ color: '#fff' }}>{stats.defDefense}</b></div>
-                <div>💪 Morale: <b style={{ color: '#fff' }}>{stats.defMorale}%</b></div>
-              </div>
-              <div style={{ marginTop: 8, padding: '5px 8px', background: 'rgba(100,30,30,0.4)', borderRadius: 4, fontSize: 10, color: '#da7d7d' }}>
-                Fortified Power: <b>{stats.defScore}</b>
-              </div>
-            </div>
+            <div style={{ fontSize: 8.5, color: '#8da88d', marginTop: 1 }}>Power: {stats.atkScore}</div>
           </div>
 
-          {/* ── Tactical Stance Selector (Options: Offensive, Defensive, Balanced) ── */}
-          {phase === 'pre' && (
-            <div style={{ background: 'rgba(15,10,6,0.9)', border: '1.5px solid #5a4020', borderRadius: 8, padding: '14px', marginBottom: 16 }}>
-              <div style={{ fontSize: 10, color: '#ffd700', letterSpacing: 2, marginBottom: 8, textTransform: 'uppercase', fontWeight: 800 }}>
-                ⚖️ CHOOSE TACTICAL BATTLE STANCE
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                {Object.values(BATTLE_STANCES).map((st) => {
-                  const isSelected = stanceKey === st.id;
-                  return (
-                    <div
-                      key={st.id}
-                      onClick={() => setStanceKey(st.id)}
-                      style={{
-                        background: isSelected ? 'linear-gradient(160deg, #2b1f14 0%, #150e09 100%)' : '#120d08',
-                        border: isSelected ? `2px solid ${st.color}` : '1px solid #4a3820',
-                        borderRadius: 6,
-                        padding: '10px 12px',
-                        cursor: 'pointer',
-                        boxShadow: isSelected ? `0 0 15px ${st.color}55` : 'none',
-                        transition: 'all 0.15s ease',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <span style={{ fontSize: 14 }}>{st.icon}</span>
-                        <span style={{ fontSize: 9, color: st.color, fontWeight: 800, textTransform: 'uppercase' }}>
-                          {st.badge}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 12, fontWeight: 900, color: isSelected ? '#ffd700' : '#fff', marginBottom: 2 }}>
-                        {st.name}
-                      </div>
-                      <div style={{ fontSize: 9.5, color: '#e8c988', fontStyle: 'italic', marginBottom: 6 }}>
-                        "{st.motto}"
-                      </div>
-                      <div style={{ fontSize: 9.5, color: '#a08868', lineHeight: 1.35 }}>
-                        {st.desc}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          <div style={{ fontSize: 13, fontWeight: 900, color: '#d4a34b' }}>VS</div>
 
-          {/* Tactical Modifiers & Win Chance */}
-          <div style={{ background: 'rgba(20,15,8,0.8)', border: '1px solid #4a3820', borderRadius: 8, padding: '12px 14px', marginBottom: 16 }}>
-            <div style={{ fontSize: 10, color: '#d4a34b', letterSpacing: 2, marginBottom: 8, textTransform: 'uppercase' }}>
-              ⚖️ Battlefield Conditions & Probability
+          {/* Defender */}
+          <div style={{ background: 'rgba(50, 20, 15, 0.5)', border: '1px solid #6a251b', borderRadius: 4, padding: '5px 8px', textAlign: 'right' }}>
+            <div style={{ fontSize: 9, color: '#ba5d5d', fontWeight: 800 }}>🏛️ {defSite.site}</div>
+            <div style={{ fontSize: 13, fontWeight: 900, color: '#fff' }}>
+              {stats.defMen.toLocaleString()} <span style={{ fontSize: 9.5, color: '#d4b8b8' }}>({stats.defCohorts} coh)</span>
             </div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <div style={{ padding: '6px 12px', background: stats.elevBonus > 0 ? 'rgba(60,100,60,0.4)' : 'rgba(40,40,40,0.4)', border: '1px solid ' + (stats.elevBonus > 0 ? '#3a8a3a' : '#333'), borderRadius: 6, fontSize: 11, color: stats.elevBonus > 0 ? '#8de88d' : '#666' }}>
-                🏔️ Terrain Elevation: <b>+{stats.elevBonus}% DEF</b>
-                {stats.elevBonus > 0 && <div style={{ fontSize: 9, color: '#6ab06a' }}>Settlement High Ground</div>}
-              </div>
-              <div style={{ padding: '6px 12px', background: fortBonus.pct > 0 ? 'rgba(100,60,20,0.4)' : 'rgba(40,40,40,0.4)', border: '1px solid ' + (fortBonus.pct > 0 ? '#8a5a1a' : '#333'), borderRadius: 6, fontSize: 11, color: fortBonus.pct > 0 ? '#e8aa4e' : '#666' }}>
-                🏰 Fortifications: <b>+{fortBonus.pct}% DEF</b>
-                {fortBonus.pct > 0 && <div style={{ fontSize: 9, color: '#c48a2e' }}>{fortBonus.label}</div>}
-              </div>
-              <div style={{ padding: '6px 12px', background: 'rgba(20,40,80,0.4)', border: '1px solid #1a3a6a', borderRadius: 6, fontSize: 11, flex: 1, minWidth: 140 }}>
-                <div style={{ color: '#6ab0ea' }}>Win Probability ({stats.stance.name})</div>
-                <div style={{ display: 'flex', gap: 0, marginTop: 4, borderRadius: 4, overflow: 'hidden', height: 8 }}>
-                  <div style={{ flex: stats.atkWinChance, background: 'linear-gradient(90deg,#22aa22,#44dd44)' }} />
-                  <div style={{ flex: 100 - stats.atkWinChance, background: 'linear-gradient(90deg,#cc2222,#ff4444)' }} />
-                </div>
-                <div style={{ fontSize: 9, color: '#8ab8e8', marginTop: 3 }}>
-                  Rome: <b>{stats.atkWinChance}%</b> · Garrison: <b>{100 - stats.atkWinChance}%</b>
-                </div>
-              </div>
-            </div>
+            <div style={{ fontSize: 8.5, color: '#a88d8d', marginTop: 1 }}>Power: {stats.defScore}</div>
           </div>
+        </div>
 
-          {/* Clash Log */}
-          {phase !== 'pre' && (
-            <div style={{ background: 'rgba(5,5,5,0.85)', border: '1px solid #332211', borderRadius: 8, padding: 12, marginBottom: 16, maxHeight: 150, overflowY: 'auto' }}>
-              {clashLines.map(function(line, i) {
+        {/* ── Compact Tactical Stance Selector ── */}
+        {phase === 'pre' && (
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+              {Object.values(BATTLE_STANCES).map((st) => {
+                const isSelected = stanceKey === st.id;
                 return (
-                  <div key={i} style={{ fontSize: 11, color: i === clashLines.length - 1 ? '#ffd700' : '#a08868', marginBottom: 4, lineHeight: 1.4 }}>
-                    {line}
-                  </div>
+                  <button
+                    key={st.id}
+                    onClick={() => setStanceKey(st.id)}
+                    style={{
+                      background: isSelected ? 'linear-gradient(180deg, #2b1f14 0%, #150e09 100%)' : '#100b07',
+                      border: isSelected ? `1.5px solid ${st.color}` : '1px solid #4a3820',
+                      borderRadius: 4,
+                      padding: '4px 6px',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      fontFamily: "'Cinzel', serif",
+                      boxShadow: isSelected ? `0 0 8px ${st.color}44` : 'none',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: isSelected ? '#ffd700' : '#ddd' }}>
+                        {st.icon} {st.name}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 8, color: '#a08868', marginTop: 2, lineHeight: 1.2 }}>
+                      {st.badge}
+                    </div>
+                  </button>
                 );
               })}
             </div>
-          )}
-
-          {/* Progress */}
-          {phase === 'clash' && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 10, color: '#d4a34b', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 2 }}>
-                Assault In Progress...
-              </div>
-              <div style={{ background: '#111', borderRadius: 4, height: 12, overflow: 'hidden', border: '1px solid #4a3820' }}>
-                <div style={{ height: '100%', width: progress + '%', background: 'linear-gradient(90deg,#8b1a1a,#cc3333,#ff6644)', transition: 'width 0.2s ease', boxShadow: '0 0 8px rgba(255,100,50,0.5)' }} />
-              </div>
-              <div style={{ textAlign: 'right', fontSize: 9, color: '#666', marginTop: 3 }}>{progress}%</div>
+            <div style={{ fontSize: 8.5, color: '#e8c988', marginTop: 4, fontStyle: 'italic', textAlign: 'center' }}>
+              {BATTLE_STANCES[stanceKey].desc}
             </div>
-          )}
-
-          {/* Result */}
-          {phase === 'result' && (
-            <div style={{ background: winner === 'attacker' ? 'linear-gradient(135deg,rgba(20,60,20,0.5),rgba(10,30,10,0.8))' : 'linear-gradient(135deg,rgba(80,10,10,0.5),rgba(40,0,0,0.8))', border: '2px solid ' + (winner === 'attacker' ? '#33aa33' : '#aa2222'), borderRadius: 10, padding: '16px 20px', marginBottom: 16, textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: 2, color: winner === 'attacker' ? '#66ff66' : '#ff4444', marginBottom: 8, textShadow: winner === 'attacker' ? '0 0 20px rgba(100,255,100,0.5)' : '0 0 20px rgba(255,50,50,0.5)' }}>
-                {winner === 'attacker' ? '🦅 VICTORIA! ROME TRIUMPHANT!' : '🛡️ ASSAULT REPELLED!'}
-              </div>
-              <div style={{ fontSize: 13, color: '#c8b898', marginBottom: 12 }}>
-                {winner === 'attacker'
-                  ? `${defSite.site} has fallen to Rome! The garrison has been routed. Since defending soldiers fell in combat, the captured city has 0 garrison remaining.`
-                  : `Defenders of ${defSite.site} resisted the assault! Surviving garrison units sustained heavy casualties.`}
-              </div>
-              <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                <div style={{ background: 'rgba(30,80,30,0.4)', border: '1px solid #2a6a2a', borderRadius: 6, padding: '8px 16px' }}>
-                  <div style={{ fontSize: 10, color: '#6ab06a' }}>Roman Losses</div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: '#ff8866' }}>{atkCasualties.toLocaleString()}</div>
-                  <div style={{ fontSize: 9, color: '#a08060' }}>
-                    {unitsDestroyedCount > 0 ? `⚠️ ${unitsDestroyedCount} Cohort(s) Wiped Out` : 'Cohorts Weakened'}
-                  </div>
-                </div>
-                <div style={{ background: 'rgba(80,30,30,0.4)', border: '1px solid #6a2a2a', borderRadius: 6, padding: '8px 16px' }}>
-                  <div style={{ fontSize: 10, color: '#ba5d5d' }}>Defender Losses</div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: '#ff8866' }}>{defCasualties.toLocaleString()}</div>
-                  <div style={{ fontSize: 9, color: '#a08060' }}>
-                    ({Math.round(defCasualties / Math.max(1, stats.defMen) * 100)}% of garrison depleted)
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Actions */}
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            {phase === 'pre' && (
-              <button
-                onClick={startClash}
-                style={{
-                  padding: '10px 24px',
-                  background: 'linear-gradient(135deg,#8b1a1a,#cc2222)',
-                  border: '1px solid #d4a34b',
-                  borderRadius: 6,
-                  color: '#fff',
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  fontFamily: "'Cinzel',serif",
-                  letterSpacing: 1,
-                  boxShadow: '0 4px 16px rgba(200,50,50,0.4)',
-                }}
-              >
-                ⚔️ COMMENCE ASSAULT ({stats.stance.name.toUpperCase()})
-              </button>
-            )}
-
-            {phase === 'result' && winner === 'attacker' && (
-              <button
-                onClick={function() {
-                  if (onVictory) {
-                    onVictory({
-                      defSite,
-                      survivingUnits,
-                      atkCasualties,
-                      defCasualties,
-                    });
-                  }
-                  onClose();
-                }}
-                style={{
-                  padding: '10px 24px',
-                  background: 'linear-gradient(135deg,#1a6b1a,#22aa22)',
-                  border: '1px solid #5db85d',
-                  borderRadius: 6,
-                  color: '#fff',
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  fontFamily: "'Cinzel',serif",
-                  letterSpacing: 1,
-                }}
-              >
-                🦅 Claim {defSite.site} for Rome!
-              </button>
-            )}
-
-            {phase === 'result' && winner === 'defender' && (
-              <button
-                onClick={function() {
-                  if (onDefeat) {
-                    onDefeat({
-                      defSite,
-                      survivingUnits,
-                      atkCasualties,
-                      defCasualties,
-                      existingGarrison: stats.garrison,
-                    });
-                  }
-                  onClose();
-                }}
-                style={{
-                  padding: '10px 24px',
-                  background: 'rgba(40,30,20,0.8)',
-                  border: '1px solid #6a4a20',
-                  borderRadius: 6,
-                  color: '#c8a868',
-                  fontSize: 13,
-                  cursor: 'pointer',
-                  fontFamily: "'Cinzel',serif",
-                }}
-              >
-                ⬅️ Sound Retreat & Regroup
-              </button>
-            )}
           </div>
+        )}
+
+        {/* Clash Log */}
+        {phase !== 'pre' && (
+          <div style={{ background: '#0a0704', border: '1px solid #332211', borderRadius: 4, padding: '6px 8px', marginBottom: 8, maxHeight: 75, overflowY: 'auto' }}>
+            {clashLines.map((line, i) => (
+              <div key={i} style={{ fontSize: 9.5, color: i === clashLines.length - 1 ? '#ffd700' : '#8a7862', lineHeight: 1.3 }}>
+                {line}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Progress Bar */}
+        {phase === 'clash' && (
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ background: '#111', borderRadius: 2, height: 8, overflow: 'hidden', border: '1px solid #4a3820' }}>
+              <div style={{ height: '100%', width: `${progress}%`, background: 'linear-gradient(90deg, #8b1a1a, #cc3333, #ffd700)', transition: 'width 0.2s ease' }} />
+            </div>
+          </div>
+        )}
+
+        {/* Result Screen */}
+        {phase === 'result' && (
+          <div style={{
+            background: winner === 'attacker' ? 'rgba(20,50,20,0.6)' : 'rgba(50,15,15,0.6)',
+            border: `1.5px solid ${winner === 'attacker' ? '#2ecc71' : '#e74c3c'}`,
+            borderRadius: 4,
+            padding: '8px 10px',
+            marginBottom: 8,
+            textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 900, color: winner === 'attacker' ? '#58d68d' : '#e74c3c' }}>
+              {winner === 'attacker' ? `🦅 VICTORIA! ${attacker?.name ? attacker.name.toUpperCase() : 'ATTACKER'} TRIUMPHANT!` : '🛡️ ASSAULT REPELLED!'}
+            </div>
+            <div style={{ fontSize: 9.5, color: '#ddd', marginTop: 2 }}>
+              {winner === 'attacker'
+                ? 'City fallen! Garrison wiped out (0 defenders remain).'
+                : 'Defenders held! Both forces sustained unequal losses.'}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 4 }}>
+              <span style={{ fontSize: 9, color: '#ff9999' }}>
+                Attacker losses: <b>{atkCasualties.toLocaleString()}</b>
+                {unitsDestroyedCount > 0 && ` (${unitsDestroyedCount} wiped)`}
+              </span>
+              <span style={{ fontSize: 9, color: '#ffb380' }}>
+                Defender losses: <b>{defCasualties.toLocaleString()}</b>
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Action Button Row */}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+          <div style={{ fontSize: 9, color: '#a08868', marginRight: 'auto' }}>
+            Odds: <b style={{ color: '#ffd700' }}>{stats.atkWinChance}%</b>
+          </div>
+
+          {phase === 'pre' && (
+            <button
+              onClick={startClash}
+              style={{
+                padding: '6px 18px',
+                background: 'linear-gradient(135deg, #a61c1c 0%, #e74c3c 100%)',
+                border: '1px solid #ffd700',
+                borderRadius: 4,
+                color: '#fff',
+                fontSize: 11,
+                fontWeight: 900,
+                cursor: 'pointer',
+                letterSpacing: 1,
+                fontFamily: "'Cinzel', serif",
+                boxShadow: '0 2px 10px rgba(231,76,60,0.4)',
+              }}
+            >
+              ⚔️ COMMENCE ASSAULT
+            </button>
+          )}
+
+          {phase === 'result' && winner === 'attacker' && (
+            <button
+              onClick={() => {
+                if (onVictory) {
+                  onVictory({
+                    defSite,
+                    survivingUnits,
+                    atkCasualties,
+                    defCasualties,
+                  });
+                }
+                onClose();
+              }}
+              style={{
+                padding: '6px 18px',
+                background: 'linear-gradient(135deg, #1b7a2b 0%, #2ecc71 100%)',
+                border: '1px solid #ffd700',
+                borderRadius: 4,
+                color: '#fff',
+                fontSize: 11,
+                fontWeight: 900,
+                cursor: 'pointer',
+                letterSpacing: 1,
+                fontFamily: "'Cinzel', serif",
+              }}
+            >
+              🦅 CLAIM {defSite.site.toUpperCase()}
+            </button>
+          )}
+
+          {phase === 'result' && winner === 'defender' && (
+            <button
+              onClick={() => {
+                if (onDefeat) {
+                  onDefeat({
+                    defSite,
+                    survivingUnits,
+                    atkCasualties,
+                    defCasualties,
+                    existingGarrison: stats.garrison,
+                  });
+                }
+                onClose();
+              }}
+              style={{
+                padding: '6px 18px',
+                background: 'rgba(50,35,20,0.8)',
+                border: '1px solid #73481e',
+                borderRadius: 4,
+                color: '#c8a868',
+                fontSize: 11,
+                cursor: 'pointer',
+                fontFamily: "'Cinzel', serif",
+              }}
+            >
+              ⬅️ RETREAT
+            </button>
+          )}
         </div>
       </div>
     </div>

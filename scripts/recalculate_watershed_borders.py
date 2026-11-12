@@ -256,8 +256,11 @@ def chaikin_smooth(coords, iterations=2):
 # Merge & smooth each interface once (ZERO OVERLAP)
 svg_border_paths = []
 border_lines_json = []
+borders_json = []
 
 for pair, segs in interface_edges.items():
+    id1 = sites[pair[0]]['id']
+    id2 = sites[pair[1]]['id']
     seg_lines = [LineString(s) for s in segs]
     u = unary_union(seg_lines)
     if u.geom_type == 'LineString':
@@ -276,6 +279,7 @@ for pair, segs in interface_edges.items():
             path_str = f"M {coords[0][0]:.1f} {coords[0][1]:.1f} " + " ".join([f"L {x:.1f} {y:.1f}" for x, y in coords[1:]])
             svg_border_paths.append(path_str)
             border_lines_json.append([[round(x, 1), round(y, 1)] for x, y in coords])
+            borders_json.append({"id1": id1, "id2": id2, "d": path_str})
 
 combined_border_d = " ".join(svg_border_paths)
 print(f"Generated {len(svg_border_paths)} unique fractal border lines (0 overlap).")
@@ -352,6 +356,7 @@ output_data = {
     "regions": regions_summary,
     "borderCount": len(border_lines_json),
     "borderLines": border_lines_json,
+    "borders": borders_json,
     "borderSvgPath": combined_border_d
 }
 
